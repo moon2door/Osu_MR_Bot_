@@ -1,4 +1,5 @@
-﻿using Osu_MR_Bot.Services; // 서비스 네임스페이스 추가
+﻿using Microsoft.Extensions.Configuration; // 이 줄 추가 필요!
+using Osu_MR_Bot.Services;
 
 namespace Osu_MR_Bot
 {
@@ -6,35 +7,40 @@ namespace Osu_MR_Bot
     {
         static async Task Main(string[] args)
         {
-            // 1. osu! API 설정
-            int clientId = 46489;
-            string clientSecret = "ordYuDMLKfs1JCo5Kovp6DhWmmvVTn8YZuVCumbz";
+            // 1. 설정 파일 로드 준비
+            var config = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .Build();
 
-            // 2. Firebase 설정 (위 가이드를 보고 채워주세요)
-            string firebaseUrl = "https://osu-mr-bot-default-rtdb.firebaseio.com/";
-            string firebaseSecret = "6IVZQ47btnvzjvr7i9sd0W0Jth7yIyRKVbMKRQEy";
+            // 2. 설정 파일에서 값 가져오기
+            // "Osu" 섹션 안의 "ClientId"를 가져옴
+            int clientId = int.Parse(config["Osu:ClientId"]);
+            string clientSecret = config["Osu:ClientSecret"];
 
-            // 3. IRC 설정 (채팅용)
-            // osu! 닉네임 (띄어쓰기는 _ 로 대체. 예: My Name -> My_Name)
-            string botUsername = "moon2door";
-            // https://osu.ppy.sh/p/irc 에서 받은 비밀번호
-            string ircPassword = "26156c26";
+            string firebaseUrl = config["Firebase:Url"];
+            string firebaseSecret = config["Firebase:Secret"];
 
-            // ==========================================
+            string botUsername = config["Irc:Username"].Trim();
+            string ircPassword = config["Irc:Password"].Trim();
 
-            Console.WriteLine("[System] 봇을 초기화합니다...");
+            Console.WriteLine($"[Debug] 닉네임: '{botUsername}' (길이: {botUsername.Length})");
+            Console.WriteLine($"[Debug] 비밀번호: 앞자리 '{ircPassword.Substring(0, 3)}...' (총 길이: {ircPassword.Length})");
 
-            // 1. API 봇 서비스 생성
-            OsuBotService botService = new OsuBotService(clientId, clientSecret, firebaseUrl, firebaseSecret);
+            Console.WriteLine("[System] 설정 파일을 성공적으로 불러왔습니다.");
 
-            // 2. API 인증 (토큰 발급)
-            await botService.ConnectAsync();
+            // 3. 봇 서비스 초기화 (이전과 동일)
+            OsuBotService bot = new OsuBotService(clientId, clientSecret, firebaseUrl, firebaseSecret);
 
-            // 3. IRC 채팅 서비스 생성 (API 봇 서비스를 주입)
-            OsuIrcService ircService = new OsuIrcService(botUsername, ircPassword, botService);
+            // 4. osu! 서버 연결
+            await bot.ConnectAsync();
 
-            // 4. 채팅 리스너 시작 (여기서 무한 대기함)
+            // 5. IRC 서비스 시작
+            OsuIrcService ircService = new OsuIrcService(botUsername, ircPassword, bot);
             await ircService.StartAsync();
+
+            Console.WriteLine("[System] 프로그램이 종료되었습니다. 아무 키나 누르면 닫힙니다.");
+            Console.ReadLine();
         }
     }
 }

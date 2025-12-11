@@ -7,7 +7,7 @@ namespace Osu_MR_Bot.Services
     {
         private readonly string _botUsername;
         private readonly string _ircPassword;
-        private readonly OsuBotService _botService; // 명령어 실행을 위해 필요
+        private readonly OsuBotService _botService;
 
         private TcpClient _tcpClient;
         private StreamReader _reader;
@@ -24,38 +24,54 @@ namespace Osu_MR_Bot.Services
         {
             try
             {
-                Console.WriteLine("[IRC] 채팅 서버 연결 중...");
-                _tcpClient = new TcpClient("irc.osu.ppy.sh", 6667);
+                Console.WriteLine($"[IRC] {_botUsername} 계정으로 접속 시도 중... (Port 6667)");
+
+                // 1. 기존 봇과 동일한 접속 설정
+                _tcpClient = new TcpClient("irc.ppy.sh", 6667);
                 var stream = _tcpClient.GetStream();
 
-                _reader = new StreamReader(stream, Encoding.UTF8);
-                _writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+                // [중요 수정] Encoding.UTF8을 제거하여 BOM(특수문자) 전송 방지
+                // 기존 봇: writer = new StreamWriter(stream) { AutoFlush = true };
+                _reader = new StreamReader(stream); // 인코딩 제거
+                _writer = new StreamWriter(stream) { AutoFlush = true }; // 인코딩 제거
 
-                // IRC 로그인 절차
-                // 1. 비밀번호 전송
+                // 2. 로그인 전송 (비동기 방식은 유지하되 내용은 동일하게)
                 await _writer.WriteLineAsync($"PASS {_ircPassword}");
-                // 2. 닉네임 전송
                 await _writer.WriteLineAsync($"NICK {_botUsername}");
 
-                Console.WriteLine("[IRC] 연결 성공! 메시지 대기 중...");
+                Console.WriteLine("[IRC] 패스워드 전송 완료 (BOM 제거됨).");
 
-                // 무한 루프로 메시지 수신 대기
+                // 3. 수신 루프
                 while (_tcpClient.Connected)
                 {
                     string line = await _reader.ReadLineAsync();
                     if (line == null) break;
 
-                    // 핑퐁 처리 (필수: 서버가 PING을 보내면 PONG으로 답해야 연결이 안 끊김)
+                    // PING 처리
                     if (line.StartsWith("PING"))
                     {
                         string pong = line.Replace("PING", "PONG");
                         await _writer.WriteLineAsync(pong);
-                        // Console.WriteLine("[IRC] Ping-Pong"); // 너무 시끄러우면 주석 처리
+                        Console.WriteLine("[IRC] PONG");
                         continue;
                     }
 
-                    // 채팅 메시지 처리 (PRIVMSG)
-                    // 예시 포맷: :SenderName!irc_id@osu.ppy.sh PRIVMSG Target :Message Content
+                    // 로그인 성공 로그
+                    if (line.Contains("001 "))
+                    {
+                        Console.WriteLine("=================================");
+                        Console.WriteLine($"[IRC] 로그인 성공! (8글자 비번 확인됨)");
+                        Console.WriteLine("=================================");
+                    }
+
+                    // 에러 로그
+                    if (line.Contains("464"))
+                    {
+                        Console.WriteLine($"[Error] 여전히 464 에러라면 정말 이상한 상황입니다.");
+                        Console.WriteLine($"[Debug] 보낸 비번: {_ircPassword}");
+                    }
+
+                    // 명령어 감지
                     if (line.Contains(" PRIVMSG "))
                     {
                         HandleMessage(line);
@@ -64,7 +80,7 @@ namespace Osu_MR_Bot.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[IRC] 오류 발생: {ex.Message}");
+                Console.WriteLine($"[IRC] 오류: {ex.Message}");
             }
         }
 
@@ -72,34 +88,22 @@ namespace Osu_MR_Bot.Services
         {
             try
             {
-                // 1. 보낸 사람(Username) 추출
-                // :Username! ... 형태
                 int exclaimIndex = rawLine.IndexOf('!');
                 if (exclaimIndex < 1) return;
 
                 string sender = rawLine.Substring(1, exclaimIndex - 1);
-
-                // 2. 메시지 내용 추출
-                // PRIVMSG Target :실제내용 ... 형태
                 int msgIndex = rawLine.IndexOf(" :", exclaimIndex);
                 if (msgIndex < 0) return;
 
                 string message = rawLine.Substring(msgIndex + 2).Trim();
 
-                // 3. 명령어 감지 (!m r start)
                 if (message == "!m r start")
                 {
-                    Console.WriteLine($"[Chat] {sender}님이 명령어를 입력했습니다: {message}");
-
-                    // 여기서 봇 서비스의 저장 로직 실행!
-                    // await를 안 쓰는 이유: 채팅 수신 루프를 멈추지 않기 위해 (Fire-and-forget)
+                    Console.WriteLine($"[Chat] {sender} 명령어 감지!");
                     _ = _botService.ExecuteStartCommandAsync(sender);
                 }
             }
-            catch
-            {
-                // 파싱 에러 무시
-            }
+            catch { }
         }
     }
 }
