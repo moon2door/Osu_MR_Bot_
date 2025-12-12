@@ -26,28 +26,22 @@ namespace Osu_MR_Bot.Services
             {
                 Console.WriteLine($"[IRC] {_botUsername} 계정으로 접속 시도 중... (Port 6667)");
 
-                // 1. 기존 봇과 동일한 접속 설정
                 _tcpClient = new TcpClient("irc.ppy.sh", 6667);
                 var stream = _tcpClient.GetStream();
 
-                // [중요 수정] Encoding.UTF8을 제거하여 BOM(특수문자) 전송 방지
-                // 기존 봇: writer = new StreamWriter(stream) { AutoFlush = true };
-                _reader = new StreamReader(stream); // 인코딩 제거
-                _writer = new StreamWriter(stream) { AutoFlush = true }; // 인코딩 제거
+                _reader = new StreamReader(stream);
+                _writer = new StreamWriter(stream) { AutoFlush = true };
 
-                // 2. 로그인 전송 (비동기 방식은 유지하되 내용은 동일하게)
                 await _writer.WriteLineAsync($"PASS {_ircPassword}");
                 await _writer.WriteLineAsync($"NICK {_botUsername}");
 
                 Console.WriteLine("[IRC] 패스워드 전송 완료.");
 
-                // 3. 수신 루프
                 while (_tcpClient.Connected)
                 {
                     string line = await _reader.ReadLineAsync();
                     if (line == null) break;
 
-                    // PING 처리
                     if (line.StartsWith("PING"))
                     {
                         string pong = line.Replace("PING", "PONG");
@@ -56,20 +50,11 @@ namespace Osu_MR_Bot.Services
                         continue;
                     }
 
-                    // 로그인 성공 로그
                     if (line.Contains("001 "))
                     {
                         Console.WriteLine($"\n[IRC] 로그인 성공! (8글자 비번 확인됨)\n");
                     }
 
-                    // 에러 로그
-                    if (line.Contains("464"))
-                    {
-                        Console.WriteLine($"[Error] 비번틀림");
-                        Console.WriteLine($"[Debug] 보낸 비번: {_ircPassword}");
-                    }
-
-                    // 명령어 감지
                     if (line.Contains(" PRIVMSG "))
                     {
                         HandleMessage(line);
@@ -79,6 +64,16 @@ namespace Osu_MR_Bot.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"[IRC] 오류: {ex.Message}");
+            }
+        }
+
+        // 메시지 전송 헬퍼 메서드
+        public async Task SendIrcMessageAsync(string target, string message)
+        {
+            if (_writer != null && _tcpClient.Connected)
+            {
+                await _writer.WriteLineAsync($"PRIVMSG {target} :{message}");
+                Console.WriteLine($"[IRC Send] To {target}: {message}");
             }
         }
 
@@ -98,7 +93,14 @@ namespace Osu_MR_Bot.Services
                 if (message == "!m r start")
                 {
                     Console.WriteLine($"[Chat] {sender} 명령어 감지!");
-                    _ = _botService.ExecuteStartCommandAsync(sender);
+
+                    // [수정] 콜백 함수 전달
+                    // (msg) => SendIrcMessageAsync(sender, msg) 부분임
+                    // 봇 서비스가 메시지를 보내달라고 요청하면, 이 람다 함수가 실행되어 IRC로 전송함
+                    _ = _botService.ExecuteStartCommandAsync(sender, async (msg) =>
+                    {
+                        await SendIrcMessageAsync(sender, msg);
+                    });
                 }
             }
             catch { }

@@ -1,5 +1,5 @@
 ﻿using System.Net.Http.Json;
-using Osu_MR_Bot.Models; // 분리한 모델 사용
+using Osu_MR_Bot.Models;
 
 namespace Osu_MR_Bot.Services
 {
@@ -64,7 +64,8 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        public async Task ExecuteStartCommandAsync(string username)
+        // 메시지를 보내야 할 때 이 함수를 호출합니다.
+        public async Task ExecuteStartCommandAsync(string username, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken))
             {
@@ -76,7 +77,7 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. 유저 정보 조회
+                // 1. 유저 정보 조회 (ID를 알아내기 위해 필수)
                 string userUrl = $"https://osu.ppy.sh/api/v2/users/{username}/osu?key=username";
                 var userResponse = await _httpClient.GetAsync(userUrl);
 
@@ -91,7 +92,23 @@ namespace Osu_MR_Bot.Services
 
                 Console.WriteLine($"[Info] 유저 식별: {userData.Username} (ID: {userData.Id})");
 
-                // 2. Top 100 조회
+                // 2. 최초 실행인지 확인 (DB 조회)
+                bool isFirstTime = await CheckIfUserIsNewAsync(userData.Id);
+
+                // 최초 실행일 경우 메시지 전송
+                if (isFirstTime && onMessage != null)
+                {
+                    await onMessage("[분석중] 최초 1회에 한하여 유저를 분석중입니다.");
+                }
+                else if (!isFirstTime)
+                {
+                    Console.WriteLine($"[Info] {userData.Username}님은 이미 DB에 존재합니다. (업데이트 진행)");
+                    await onMessage("[분석중] 해당 유저는 최초 실행이 아닙니다.");
+                    await onMessage("[업데이트중] 기존에 저장되어 있던 내용을 업데이트 합니다.");
+                    // 이미 존재하는 유저에게는 별도 메시지를 보내지 않거나, 필요하면 여기서 추가 가능
+                }
+
+                // 3. Top 100 조회
                 string scoresUrl = $"https://osu.ppy.sh/api/v2/users/{userData.Id}/scores/best?mode=osu&limit=100";
                 var scoresResponse = await _httpClient.GetAsync(scoresUrl);
 
@@ -104,7 +121,7 @@ namespace Osu_MR_Bot.Services
                 var topScores = await scoresResponse.Content.ReadFromJsonAsync<List<OsuScore>>();
                 Console.WriteLine($"[Info] Top 100 기록 {topScores?.Count ?? 0}개 수신 완료.");
 
-                // 3. 데이터 패키징
+                // 4. 데이터 패키징
                 var dataToSave = new UserBotData
                 {
                     UserId = userData.Id,
@@ -115,13 +132,49 @@ namespace Osu_MR_Bot.Services
                     LastUpdated = DateTime.UtcNow
                 };
 
-                // 4. 저장
+                // 5. 저장
                 await SaveToFirebaseAsync(dataToSave);
+
+                // 최초 실행일 경우 완료 메시지 전송
+                if (isFirstTime && onMessage != null)
+                {
+                    await onMessage("[분석완료] 분석이 완료 되었습니다!");
+                    await onMessage("자신의 pp현황을 업데이트 하고싶다면 !m r start 를 입력하여 주세요!");
+                }
+                else
+                {
+                    await onMessage("[업데이트완료] pp현황을 업데이트 했습니다!");
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[Error] 작업 중 예외 발생: {ex.Message}");
             }
+        }
+
+        // 유저가 Firebase에 이미 있는지 확인하는 헬퍼 메서드
+        private async Task<bool> CheckIfUserIsNewAsync(int userId)
+        {
+            string dbUrl = $"{_firebaseUrl}/users/{userId}.json?auth={_firebaseSecret}";
+            try
+            {
+                var response = await _httpClient.GetAsync(dbUrl);
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    // Firebase는 데이터가 없으면 "null" 문자열을 반환합니다.
+                    if (string.IsNullOrEmpty(content) || content == "null")
+                    {
+                        return true; // 데이터 없음 -> 최초 실행
+                    }
+                    return false; // 데이터 있음 -> 재실행
+                }
+            }
+            catch
+            {
+                // 에러 발생 시 안전하게 최초 실행으로 간주하거나 로그를 남김
+            }
+            return true;
         }
 
         private async Task SaveToFirebaseAsync(UserBotData data)
@@ -130,7 +183,6 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // PUT은 덮어쓰기(갱신) 효과가 있습니다.
                 var response = await _httpClient.PutAsJsonAsync(dbUrl, data);
 
                 if (response.IsSuccessStatusCode)
