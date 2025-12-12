@@ -39,7 +39,8 @@ namespace Osu_MR_Bot
             Console.WriteLine("\n==================================================");
             Console.WriteLine(" [System] 봇이 실행 중입니다.");
             Console.WriteLine(" - 콘솔에 명령어를 입력하면 봇 자신에게 보낸 것으로 처리됩니다.");
-            Console.WriteLine(" - 예: !m r start, !m o 12345 farm, !m r help");
+            // [수정] 안내 메시지 변경
+            Console.WriteLine(" - 예: !m r start, !m o farm 12345 67890");
             Console.WriteLine(" - 'q' 입력 후 엔터: 프로그램 종료");
             Console.WriteLine("==================================================\n");
 
@@ -59,8 +60,16 @@ namespace Osu_MR_Bot
                     break;
                 }
 
-                // [수정] 입력된 내용을 그대로 봇 로직에 전달 (자신이 보낸 것으로 처리)
-                // 채팅창에 "!m r help"를 친 것과 똑같이 동작합니다.
+                // [추가] 관리자 전용 명령어 (!list)
+                if (trimmedInput.ToLower() == "!list")
+                {
+                    Console.WriteLine("[System] 기여 현황을 조회합니다...");
+                    string stats = await bot.GetMapContributionStatsAsync();
+                    Console.WriteLine(stats);
+                    continue; // IRC 서비스로 넘기지 않고 루프 재시작
+                }
+
+                // 입력된 내용을 그대로 봇 로직에 전달 (자신이 보낸 것으로 처리)
                 Console.WriteLine($"[Manual] 콘솔 명령 실행: {trimmedInput}");
                 await ircService.ProcessCommandAsync(botUsername, trimmedInput);
             }

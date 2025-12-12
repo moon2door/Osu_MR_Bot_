@@ -79,5 +79,13 @@ namespace Osu_MR_Bot.Models
 
         [JsonPropertyName("beatmapset")]
         public BeatmapSetInfo BeatmapSet { get; set; }
+
+        // [신규] 맵 상태 (ranked, loved, etc.)
+        [JsonPropertyName("status")]
+        public string Status { get; set; }
+
+        // [신규] 게임 모드 (0 = osu!, 1 = taiko, ...)
+        [JsonPropertyName("mode_int")]
+        public int ModeInt { get; set; }
     }
 }

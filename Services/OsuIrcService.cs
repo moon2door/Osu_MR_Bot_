@@ -1,7 +1,8 @@
 ﻿using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
-using System.Linq; // Array.Exists 사용을 위해 추가
+using System.Linq;
+using System.Collections.Generic;
 
 namespace Osu_MR_Bot.Services
 {
@@ -15,7 +16,7 @@ namespace Osu_MR_Bot.Services
         private StreamReader _reader;
         private StreamWriter _writer;
 
-        // [이동] 스타일 목록을 이곳에서 관리합니다.
+        // 허용된 스타일 목록
         private static readonly string[] AllowedStyles = { "farm", "generic", "stream", "tech", "flow", "fingcon", "lowAR", "DT", "Alt" };
 
         public OsuIrcService(string botUsername, string ircPassword, OsuBotService botService)
@@ -72,7 +73,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // 메시지 전송 헬퍼 메서드
         public async Task SendIrcMessageAsync(string target, string message)
         {
             if (_writer != null && _tcpClient.Connected)
@@ -82,12 +82,10 @@ namespace Osu_MR_Bot.Services
             }
             else
             {
-                // IRC 연결이 끊겨있거나 아직 안 된 경우 콘솔에만 출력 (콘솔 테스트용)
                 Console.WriteLine($"[IRC Disconnected] To {target}: {message}");
             }
         }
 
-        // [신규] 공용 명령어 처리기 (콘솔 & 채팅 공용)
         public async Task ProcessCommandAsync(string sender, string message)
         {
             string cmd = message.Trim();
@@ -101,43 +99,70 @@ namespace Osu_MR_Bot.Services
                     await SendIrcMessageAsync(sender, msg);
                 });
             }
-            // 2. !m o [맵ID] [스타일]
+            // 2. !m o [스타일] [맵ID...] (명령어 구조 변경)
             else if (cmd.StartsWith("!m o "))
             {
                 string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
+                // 최소 길이 4: !m o [스타일] [맵ID]
                 if (parts.Length >= 4)
                 {
-                    if (int.TryParse(parts[2], out int mapId))
+                    // 세 번째 요소(인덱스 2)를 스타일로 간주
+                    string inputStyle = parts[2];
+
+                    // 스타일 유효성 검사 (대소문자 무시)
+                    if (Array.Exists(AllowedStyles, s => s.Equals(inputStyle, StringComparison.OrdinalIgnoreCase)))
                     {
-                        // [수정] 입력값을 소문자로 변환하지 않고 그대로 가져옵니다.
-                        string inputStyle = parts[3];
+                        // 네 번째 요소(인덱스 3)부터 끝까지 맵 ID로 간주
+                        List<int> mapIds = new List<int>();
+                        bool allParsed = true;
 
-                        // [수정] 스타일 유효성 검사 (대소문자 무시하고 비교)
-                        // 예: "dt", "DT", "Dt" 모두 허용
-                        if (Array.Exists(AllowedStyles, s => s.Equals(inputStyle, StringComparison.OrdinalIgnoreCase)))
+                        for (int i = 3; i < parts.Length; i++)
                         {
-                            Console.WriteLine($"[Command] {sender} 맵 등록 시도: {mapId} -> {inputStyle}");
-
-                            // 봇 서비스에는 입력값 그대로 전달 (서비스 내부에서 소문자로 저장함)
-                            _ = _botService.RegisterMapStyleAsync(sender, mapId, inputStyle, async (msg) =>
+                            if (int.TryParse(parts[i], out int mapId))
                             {
-                                await SendIrcMessageAsync(sender, msg);
-                            });
+                                mapIds.Add(mapId);
+                            }
+                            else
+                            {
+                                allParsed = false;
+                                break;
+                            }
+                        }
+
+                        if (allParsed && mapIds.Count > 0)
+                        {
+                            // 1개면 단일 등록, 여러 개면 일괄 등록 호출
+                            if (mapIds.Count == 1)
+                            {
+                                Console.WriteLine($"[Command] {sender} 맵 등록 시도: {mapIds[0]} -> {inputStyle}");
+                                _ = _botService.RegisterMapStyleAsync(sender, mapIds[0], inputStyle, async (msg) =>
+                                {
+                                    await SendIrcMessageAsync(sender, msg);
+                                });
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[Command] {sender} 맵 일괄 등록 시도: {mapIds.Count}개 -> {inputStyle}");
+                                _ = _botService.RegisterBatchMapStylesAsync(sender, mapIds, inputStyle, async (msg) =>
+                                {
+                                    await SendIrcMessageAsync(sender, msg);
+                                });
+                            }
                         }
                         else
                         {
-                            await SendIrcMessageAsync(sender, $"[Error] 유효하지 않은 스타일입니다. ({string.Join(", ", AllowedStyles)})");
+                            await SendIrcMessageAsync(sender, "[Error] 맵 번호 형식이 올바르지 않습니다. (모두 숫자여야 함)");
                         }
                     }
                     else
                     {
-                        await SendIrcMessageAsync(sender, "[Error] 맵 번호는 숫자여야 합니다.");
+                        await SendIrcMessageAsync(sender, $"[Error] 유효하지 않은 스타일입니다. ({string.Join(", ", AllowedStyles)})");
                     }
                 }
                 else
                 {
-                    await SendIrcMessageAsync(sender, "[Usage] !m o [맵번호] [스타일]");
+                    await SendIrcMessageAsync(sender, "[Usage] !m o [스타일] [맵번호] ... [맵번호]");
                 }
             }
             // 3. !m r help
@@ -145,7 +170,8 @@ namespace Osu_MR_Bot.Services
             {
                 await SendIrcMessageAsync(sender, "=== Osu! MR Bot 도움말 ===");
                 await SendIrcMessageAsync(sender, "!m r start : 봇 등록 및 정보 갱신");
-                await SendIrcMessageAsync(sender, "!m o [맵ID] [스타일] : 맵 스타일 등록");
+                // 도움말 메시지 수정
+                await SendIrcMessageAsync(sender, "!m o [스타일] [맵ID] ... : 맵 스타일 등록 (여러 개 가능)");
                 await SendIrcMessageAsync(sender, $"└ 스타일: {string.Join(", ", AllowedStyles)}");
             }
         }
@@ -159,7 +185,6 @@ namespace Osu_MR_Bot.Services
 
                 string sender = rawLine.Substring(1, exclaimIndex - 1);
 
-                // 봇 자신이 보낸 메시지는 처리하지 않고 무시
                 if (sender == _botUsername) return;
 
                 int msgIndex = rawLine.IndexOf(" :", exclaimIndex);
@@ -167,7 +192,6 @@ namespace Osu_MR_Bot.Services
 
                 string message = rawLine.Substring(msgIndex + 2).Trim();
 
-                // 실제 처리는 ProcessCommandAsync에게 위임
                 await ProcessCommandAsync(sender, message);
             }
             catch { }
