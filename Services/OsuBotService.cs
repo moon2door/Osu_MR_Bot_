@@ -98,6 +98,7 @@ namespace Osu_MR_Bot.Services
                 // 최초 실행일 경우 메시지 전송
                 if (isFirstTime && onMessage != null)
                 {
+                    await onMessage("반갑습니다. 해당 봇은 5성 이상의 맵만 추천하니 참고해주시길 바랍니다.");
                     await onMessage("[분석중] 최초 1회에 한하여 유저를 분석중입니다.");
                 }
                 else if (!isFirstTime)
@@ -108,18 +109,18 @@ namespace Osu_MR_Bot.Services
                     // 이미 존재하는 유저에게는 별도 메시지를 보내지 않거나, 필요하면 여기서 추가 가능
                 }
 
-                // 3. Top 100 조회
-                string scoresUrl = $"https://osu.ppy.sh/api/v2/users/{userData.Id}/scores/best?mode=osu&limit=100";
+                // 3. Top 50 조회
+                string scoresUrl = $"https://osu.ppy.sh/api/v2/users/{userData.Id}/scores/best?mode=osu&limit=50";
                 var scoresResponse = await _httpClient.GetAsync(scoresUrl);
 
                 if (!scoresResponse.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"[Error] Top 100 조회 실패. 코드: {scoresResponse.StatusCode}");
+                    Console.WriteLine($"[Error] Top 50 조회 실패. 코드: {scoresResponse.StatusCode}");
                     return;
                 }
 
                 var topScores = await scoresResponse.Content.ReadFromJsonAsync<List<OsuScore>>();
-                Console.WriteLine($"[Info] Top 100 기록 {topScores?.Count ?? 0}개 수신 완료.");
+                Console.WriteLine($"[Info] Top 50 기록 {topScores?.Count ?? 0}개 수신 완료.");
 
                 // 4. 데이터 패키징
                 var dataToSave = new UserBotData
