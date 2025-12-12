@@ -1,6 +1,7 @@
 ﻿using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
+using System.Linq; // Array.Exists 사용을 위해 추가
 
 namespace Osu_MR_Bot.Services
 {
@@ -13,6 +14,9 @@ namespace Osu_MR_Bot.Services
         private TcpClient _tcpClient;
         private StreamReader _reader;
         private StreamWriter _writer;
+
+        // [이동] 스타일 목록을 이곳에서 관리합니다.
+        private static readonly string[] AllowedStyles = { "farm", "generic", "stream", "tech", "flow", "fingcon", "lowAR", "DT", "Alt" };
 
         public OsuIrcService(string botUsername, string ircPassword, OsuBotService botService)
         {
@@ -58,7 +62,7 @@ namespace Osu_MR_Bot.Services
 
                     if (line.Contains(" PRIVMSG "))
                     {
-                        HandleMessage(line);
+                        await HandleMessage(line);
                     }
                 }
             }
@@ -76,6 +80,74 @@ namespace Osu_MR_Bot.Services
                 await _writer.WriteLineAsync($"PRIVMSG {target} :{message}");
                 Console.WriteLine($"[IRC Send] To {target}: {message}");
             }
+            else
+            {
+                // IRC 연결이 끊겨있거나 아직 안 된 경우 콘솔에만 출력 (콘솔 테스트용)
+                Console.WriteLine($"[IRC Disconnected] To {target}: {message}");
+            }
+        }
+
+        // [신규] 공용 명령어 처리기 (콘솔 & 채팅 공용)
+        public async Task ProcessCommandAsync(string sender, string message)
+        {
+            string cmd = message.Trim();
+
+            // 1. !m r start
+            if (cmd == "!m r start")
+            {
+                Console.WriteLine($"[Command] {sender}: {cmd}");
+                _ = _botService.ExecuteStartCommandAsync(sender, async (msg) =>
+                {
+                    await SendIrcMessageAsync(sender, msg);
+                });
+            }
+            // 2. !m o [맵ID] [스타일]
+            else if (cmd.StartsWith("!m o "))
+            {
+                string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length >= 4)
+                {
+                    if (int.TryParse(parts[2], out int mapId))
+                    {
+                        // [수정] 입력값을 소문자로 변환하지 않고 그대로 가져옵니다.
+                        string inputStyle = parts[3];
+
+                        // [수정] 스타일 유효성 검사 (대소문자 무시하고 비교)
+                        // 예: "dt", "DT", "Dt" 모두 허용
+                        if (Array.Exists(AllowedStyles, s => s.Equals(inputStyle, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            Console.WriteLine($"[Command] {sender} 맵 등록 시도: {mapId} -> {inputStyle}");
+
+                            // 봇 서비스에는 입력값 그대로 전달 (서비스 내부에서 소문자로 저장함)
+                            _ = _botService.RegisterMapStyleAsync(sender, mapId, inputStyle, async (msg) =>
+                            {
+                                await SendIrcMessageAsync(sender, msg);
+                            });
+                        }
+                        else
+                        {
+                            await SendIrcMessageAsync(sender, $"[Error] 유효하지 않은 스타일입니다. ({string.Join(", ", AllowedStyles)})");
+                        }
+                    }
+                    else
+                    {
+                        await SendIrcMessageAsync(sender, "[Error] 맵 번호는 숫자여야 합니다.");
+                    }
+                }
+                else
+                {
+                    await SendIrcMessageAsync(sender, "[Usage] !m o [맵번호] [스타일]");
+                }
+            }
+            // 3. !m r help
+            else if (cmd.StartsWith("!m r help"))
+            {
+                await SendIrcMessageAsync(sender, "=== Osu! MR Bot 도움말 ===");
+                await SendIrcMessageAsync(sender, "!m r start : 봇 등록 및 정보 갱신");
+                await SendIrcMessageAsync(sender, "!m o [맵ID] [스타일] : 맵 스타일 등록");
+                await SendIrcMessageAsync(sender, $"└ 스타일: {string.Join(", ", AllowedStyles)}");
+            }
         }
 
         private async Task HandleMessage(string rawLine)
@@ -86,57 +158,17 @@ namespace Osu_MR_Bot.Services
                 if (exclaimIndex < 1) return;
 
                 string sender = rawLine.Substring(1, exclaimIndex - 1);
+
+                // 봇 자신이 보낸 메시지는 처리하지 않고 무시
+                if (sender == _botUsername) return;
+
                 int msgIndex = rawLine.IndexOf(" :", exclaimIndex);
                 if (msgIndex < 0) return;
 
                 string message = rawLine.Substring(msgIndex + 2).Trim();
 
-                // 1. !m r start 명령어 처리 (Top 50 저장 기능 제거됨)
-                if (message == "!m r start")
-                {
-                    Console.WriteLine($"[Chat] {sender} 명령어 감지: {message}");
-                    _ = _botService.ExecuteStartCommandAsync(sender, async (msg) =>
-                    {
-                        await SendIrcMessageAsync(sender, msg);
-                    });
-                }
-                // [추가] 2. !m o [맵ID] [스타일] 명령어 처리
-                else if (message.StartsWith("!m o "))
-                {
-                    // 예: "!m o 123456 jump"
-                    string[] parts = message.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-                    // parts[0]="!m", parts[1]="o", parts[2]="123456", parts[3]="jump"
-                    if (parts.Length >= 4)
-                    {
-                        if (int.TryParse(parts[2], out int mapId))
-                        {
-                            string style = parts[3];
-                            Console.WriteLine($"[Chat] {sender} 맵 등록 시도: {mapId} -> {style}");
-
-                            _ = _botService.RegisterMapStyleAsync(sender, mapId, style, async (msg) =>
-                            {
-                                await SendIrcMessageAsync(sender, msg);
-                            });
-                        }
-                        else
-                        {
-                            _ = SendIrcMessageAsync(sender, "맵 번호는 숫자여야 합니다.");
-                        }
-                    }
-                    else
-                    {
-                        _ = SendIrcMessageAsync(sender, "사용법: !m o [맵번호] [스타일]");
-                    }
-                }
-
-                else if (message.StartsWith("!m r help"))
-                {
-                    await SendIrcMessageAsync(sender, "!m r start ▶ (최초실행시) 유저의 정보를 등록합니다. / (재실행시) 유저의 정보를 최신화합니다.");
-                    await SendIrcMessageAsync(sender, "!m o [맵번호] [스타일] ▶ [맵번호]를 [스타일]에 저장합니다. (저장된 내용은 모든 유저가 추천받을 수 있습니다.)");
-                    await SendIrcMessageAsync(sender, "== 사용예시 ▶ !m o 123456 tech");
-                    await SendIrcMessageAsync(sender, "== 스타일 종류 ▶ Farm, Generic, Stream, Tech, Flow, FingCon, LowAR");
-                }
+                // 실제 처리는 ProcessCommandAsync에게 위임
+                await ProcessCommandAsync(sender, message);
             }
             catch { }
         }

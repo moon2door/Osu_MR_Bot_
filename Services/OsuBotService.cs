@@ -65,7 +65,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // 메시지를 보내야 할 때 이 함수를 호출합니다.
         public async Task ExecuteStartCommandAsync(string username, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken))
@@ -78,7 +77,6 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. 유저 정보 조회 (ID를 알아내기 위해 필수)
                 string userUrl = $"https://osu.ppy.sh/api/v2/users/{username}/osu?key=username";
                 var userResponse = await _httpClient.GetAsync(userUrl);
 
@@ -94,13 +92,12 @@ namespace Osu_MR_Bot.Services
 
                 Console.WriteLine($"[Info] 유저 식별: {userData.Username} (ID: {userData.Id})");
 
-                // 2. 최초 실행인지 확인 (DB 조회)
                 bool isFirstTime = await CheckIfUserIsNewAsync(userData.Id);
 
-                // 3. 메시지 전송 (상황별)
                 if (isFirstTime && onMessage != null)
                 {
                     await onMessage("반갑습니다. 해당 봇은 5성 이상의 맵만 추천하니 참고해주시길 바랍니다.");
+                    await onMessage("명령어는 !m r help 를 통해 찾아 볼 수 있습니다.");
                     await onMessage("[분석중] 최초 1회에 한하여 유저를 분석중입니다.");
                 }
                 else if (!isFirstTime && onMessage != null)
@@ -109,9 +106,6 @@ namespace Osu_MR_Bot.Services
                     await onMessage("[업데이트중] 기존에 저장되어 있던 내용을 업데이트 합니다.");
                 }
 
-                // [삭제] Top 50 조회 및 저장 로직을 완전히 제거했습니다.
-
-                // 4. 데이터 패키징 (Top 50 점수 목록 제외, 메타데이터만 포함)
                 var dataToSave = new UserBotData
                 {
                     UserId = userData.Id,
@@ -121,10 +115,8 @@ namespace Osu_MR_Bot.Services
                     LastUpdated = DateTime.UtcNow
                 };
 
-                // 5. 저장
                 await SaveToFirebaseAsync(dataToSave);
 
-                // 6. 완료 메시지 전송
                 if (isFirstTime && onMessage != null)
                 {
                     await onMessage("[분석완료] 분석이 완료 되었습니다!");
@@ -142,7 +134,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // [신규] !m o [맵ID] [스타일] 처리 로직
         public async Task RegisterMapStyleAsync(string senderUsername, int mapId, string style, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken)) return;
@@ -155,7 +146,6 @@ namespace Osu_MR_Bot.Services
                 string mapUrl = $"https://osu.ppy.sh/api/v2/beatmaps/{mapId}";
                 var response = await _httpClient.GetAsync(mapUrl);
 
-                // ... (맵 정보 조회 및 난이도 계산 로직 유지)
                 if (!response.IsSuccessStatusCode)
                 {
                     if (onMessage != null) await onMessage($"맵 정보를 가져올 수 없습니다. (ID: {mapId})");
@@ -166,22 +156,36 @@ namespace Osu_MR_Bot.Services
                 if (mapData == null) return;
 
                 int difficultyFloor = (int)Math.Floor(mapData.DifficultyRating);
-                string styleLower = style.ToLower(); // 스타일은 소문자로 통일
+                string styleLower = style.ToLower();
 
-                // 3. Firebase 저장 경로: styles/{style}/{difficultyFloor}/{mapId}
+                // 3. Firebase 저장 경로 설정
                 string dbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}/{mapId}.json?auth={_firebaseSecret}";
 
-                // 저장할 데이터 (맵 제목, 아티스트, 정확한 SR)
+                // [추가] 이미 존재하는지 확인
+                var checkResponse = await _httpClient.GetAsync(dbUrl);
+                if (checkResponse.IsSuccessStatusCode)
+                {
+                    string existingContent = await checkResponse.Content.ReadAsStringAsync();
+                    // Firebase는 데이터가 없으면 "null" 문자열을 반환합니다.
+                    if (!string.IsNullOrEmpty(existingContent) && existingContent != "null")
+                    {
+                        Console.WriteLine($"[Info] 이미 등록된 맵입니다: {mapId} ({styleLower})");
+                        if (onMessage != null) await onMessage("이미 있는 곡입니다!");
+                        return; // 함수 종료
+                    }
+                }
+
+                // 저장할 데이터
                 var mapInfoToSave = new
                 {
                     Title = mapData.BeatmapSet.Title,
                     Artist = mapData.BeatmapSet.Artist,
                     StarRating = mapData.DifficultyRating,
                     AddedAt = DateTime.UtcNow,
-                    AddedBy = senderUsername // [추가] 맵을 추가한 사람의 닉네임
+                    AddedBy = senderUsername
                 };
 
-                // PUT으로 저장 (덮어쓰기)
+                // PUT으로 저장
                 var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, mapInfoToSave);
 
                 if (saveResponse.IsSuccessStatusCode)
@@ -202,7 +206,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // 유저가 Firebase에 이미 있는지 확인하는 헬퍼 메서드
         private async Task<bool> CheckIfUserIsNewAsync(int userId)
         {
             string dbUrl = $"{_firebaseUrl}/users/{userId}.json?auth={_firebaseSecret}";
@@ -212,17 +215,15 @@ namespace Osu_MR_Bot.Services
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsStringAsync();
-                    // Firebase는 데이터가 없으면 "null" 문자열을 반환합니다.
                     if (string.IsNullOrEmpty(content) || content == "null")
                     {
-                        return true; // 데이터 없음 -> 최초 실행
+                        return true;
                     }
-                    return false; // 데이터 있음 -> 재실행
+                    return false;
                 }
             }
             catch
             {
-                // 에러 발생 시 안전하게 최초 실행으로 간주하거나 로그를 남김
             }
             return true;
         }
