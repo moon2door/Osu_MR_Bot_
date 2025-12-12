@@ -39,7 +39,7 @@ namespace Osu_MR_Bot.Services
                 await _writer.WriteLineAsync($"PASS {_ircPassword}");
                 await _writer.WriteLineAsync($"NICK {_botUsername}");
 
-                Console.WriteLine("[IRC] 패스워드 전송 완료 (BOM 제거됨).");
+                Console.WriteLine("[IRC] 패스워드 전송 완료.");
 
                 // 3. 수신 루프
                 while (_tcpClient.Connected)
@@ -59,15 +59,13 @@ namespace Osu_MR_Bot.Services
                     // 로그인 성공 로그
                     if (line.Contains("001 "))
                     {
-                        Console.WriteLine("=================================");
-                        Console.WriteLine($"[IRC] 로그인 성공! (8글자 비번 확인됨)");
-                        Console.WriteLine("=================================");
+                        Console.WriteLine($"\n[IRC] 로그인 성공! (8글자 비번 확인됨)\n");
                     }
 
                     // 에러 로그
                     if (line.Contains("464"))
                     {
-                        Console.WriteLine($"[Error] 여전히 464 에러라면 정말 이상한 상황입니다.");
+                        Console.WriteLine($"[Error] 비번틀림");
                         Console.WriteLine($"[Debug] 보낸 비번: {_ircPassword}");
                     }
 
