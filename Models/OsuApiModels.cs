@@ -64,4 +64,20 @@ namespace Osu_MR_Bot.Models
         [JsonPropertyName("artist")]
         public string Artist { get; set; }
     }
+
+    // [추가] 맵 상세 정보 (난이도 확인용)
+    public class OsuBeatmap
+    {
+        [JsonPropertyName("id")]
+        public int Id { get; set; }
+
+        [JsonPropertyName("difficulty_rating")]
+        public double DifficultyRating { get; set; }
+
+        [JsonPropertyName("beatmapset_id")]
+        public int BeatmapSetId { get; set; }
+
+        [JsonPropertyName("beatmapset")]
+        public BeatmapSetInfo BeatmapSet { get; set; }
+    }
 }

@@ -1,5 +1,6 @@
 ﻿using System.Net.Http.Json;
 using Osu_MR_Bot.Models;
+using System.Text.Json.Serialization;
 
 namespace Osu_MR_Bot.Services
 {
@@ -84,6 +85,7 @@ namespace Osu_MR_Bot.Services
                 if (!userResponse.IsSuccessStatusCode)
                 {
                     Console.WriteLine($"[Error] 유저 조회 실패. 코드: {userResponse.StatusCode}");
+                    if (onMessage != null) await onMessage("유저를 찾을 수 없습니다.");
                     return;
                 }
 
@@ -95,54 +97,40 @@ namespace Osu_MR_Bot.Services
                 // 2. 최초 실행인지 확인 (DB 조회)
                 bool isFirstTime = await CheckIfUserIsNewAsync(userData.Id);
 
-                // 최초 실행일 경우 메시지 전송
+                // 3. 메시지 전송 (상황별)
                 if (isFirstTime && onMessage != null)
                 {
                     await onMessage("반갑습니다. 해당 봇은 5성 이상의 맵만 추천하니 참고해주시길 바랍니다.");
                     await onMessage("[분석중] 최초 1회에 한하여 유저를 분석중입니다.");
                 }
-                else if (!isFirstTime)
+                else if (!isFirstTime && onMessage != null)
                 {
-                    Console.WriteLine($"[Info] {userData.Username}님은 이미 DB에 존재합니다. (업데이트 진행)");
                     await onMessage("[분석중] 해당 유저는 최초 실행이 아닙니다.");
                     await onMessage("[업데이트중] 기존에 저장되어 있던 내용을 업데이트 합니다.");
-                    // 이미 존재하는 유저에게는 별도 메시지를 보내지 않거나, 필요하면 여기서 추가 가능
                 }
 
-                // 3. Top 50 조회
-                string scoresUrl = $"https://osu.ppy.sh/api/v2/users/{userData.Id}/scores/best?mode=osu&limit=50";
-                var scoresResponse = await _httpClient.GetAsync(scoresUrl);
+                // [삭제] Top 50 조회 및 저장 로직을 완전히 제거했습니다.
 
-                if (!scoresResponse.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"[Error] Top 50 조회 실패. 코드: {scoresResponse.StatusCode}");
-                    return;
-                }
-
-                var topScores = await scoresResponse.Content.ReadFromJsonAsync<List<OsuScore>>();
-                Console.WriteLine($"[Info] Top 50 기록 {topScores?.Count ?? 0}개 수신 완료.");
-
-                // 4. 데이터 패키징
+                // 4. 데이터 패키징 (Top 50 점수 목록 제외, 메타데이터만 포함)
                 var dataToSave = new UserBotData
                 {
                     UserId = userData.Id,
                     Username = userData.Username,
                     CurrentPp = userData.Statistics.Pp,
                     GlobalRank = userData.Statistics.GlobalRank,
-                    Top100Scores = topScores ?? new List<OsuScore>(),
                     LastUpdated = DateTime.UtcNow
                 };
 
                 // 5. 저장
                 await SaveToFirebaseAsync(dataToSave);
 
-                // 최초 실행일 경우 완료 메시지 전송
+                // 6. 완료 메시지 전송
                 if (isFirstTime && onMessage != null)
                 {
                     await onMessage("[분석완료] 분석이 완료 되었습니다!");
                     await onMessage("자신의 pp현황을 업데이트 하고싶다면 !m r start 를 입력하여 주세요!");
                 }
-                else
+                else if (onMessage != null)
                 {
                     await onMessage("[업데이트완료] pp현황을 업데이트 했습니다!");
                 }
@@ -150,6 +138,67 @@ namespace Osu_MR_Bot.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"[Error] 작업 중 예외 발생: {ex.Message}");
+                if (onMessage != null) await onMessage("작업 중 예상치 못한 오류가 발생했습니다.");
+            }
+        }
+
+        // [신규] !m o [맵ID] [스타일] 처리 로직
+        public async Task RegisterMapStyleAsync(string senderUsername, int mapId, string style, Func<string, Task>? onMessage = null)
+        {
+            if (string.IsNullOrEmpty(_accessToken)) return;
+
+            Console.WriteLine($"[Command] 맵 등록 요청: ID={mapId}, Style={style}, By={senderUsername}");
+
+            try
+            {
+                // 1. osu! API에서 맵 정보(SR) 가져오기
+                string mapUrl = $"https://osu.ppy.sh/api/v2/beatmaps/{mapId}";
+                var response = await _httpClient.GetAsync(mapUrl);
+
+                // ... (맵 정보 조회 및 난이도 계산 로직 유지)
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (onMessage != null) await onMessage($"맵 정보를 가져올 수 없습니다. (ID: {mapId})");
+                    return;
+                }
+
+                var mapData = await response.Content.ReadFromJsonAsync<OsuBeatmap>();
+                if (mapData == null) return;
+
+                int difficultyFloor = (int)Math.Floor(mapData.DifficultyRating);
+                string styleLower = style.ToLower(); // 스타일은 소문자로 통일
+
+                // 3. Firebase 저장 경로: styles/{style}/{difficultyFloor}/{mapId}
+                string dbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}/{mapId}.json?auth={_firebaseSecret}";
+
+                // 저장할 데이터 (맵 제목, 아티스트, 정확한 SR)
+                var mapInfoToSave = new
+                {
+                    Title = mapData.BeatmapSet.Title,
+                    Artist = mapData.BeatmapSet.Artist,
+                    StarRating = mapData.DifficultyRating,
+                    AddedAt = DateTime.UtcNow,
+                    AddedBy = senderUsername // [추가] 맵을 추가한 사람의 닉네임
+                };
+
+                // PUT으로 저장 (덮어쓰기)
+                var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, mapInfoToSave);
+
+                if (saveResponse.IsSuccessStatusCode)
+                {
+                    string msg = $"[등록완료] '{mapData.BeatmapSet.Title}' 맵이 '{styleLower}' 스타일 / '{difficultyFloor}성' 구간에 등록되었습니다. (추가자: {senderUsername})";
+                    Console.WriteLine(msg);
+                    if (onMessage != null) await onMessage(msg);
+                }
+                else
+                {
+                    if (onMessage != null) await onMessage("DB 저장에 실패했습니다.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] 맵 등록 중 오류: {ex.Message}");
+                if (onMessage != null) await onMessage("오류가 발생했습니다.");
             }
         }
 

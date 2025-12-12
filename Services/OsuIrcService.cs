@@ -1,5 +1,6 @@
 ﻿using System.Net.Sockets;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Osu_MR_Bot.Services
 {
@@ -77,7 +78,7 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        private void HandleMessage(string rawLine)
+        private async Task HandleMessage(string rawLine)
         {
             try
             {
@@ -90,17 +91,51 @@ namespace Osu_MR_Bot.Services
 
                 string message = rawLine.Substring(msgIndex + 2).Trim();
 
+                // 1. !m r start 명령어 처리 (Top 50 저장 기능 제거됨)
                 if (message == "!m r start")
                 {
-                    Console.WriteLine($"[Chat] {sender} 명령어 감지!");
-
-                    // [수정] 콜백 함수 전달
-                    // (msg) => SendIrcMessageAsync(sender, msg) 부분임
-                    // 봇 서비스가 메시지를 보내달라고 요청하면, 이 람다 함수가 실행되어 IRC로 전송함
+                    Console.WriteLine($"[Chat] {sender} 명령어 감지: {message}");
                     _ = _botService.ExecuteStartCommandAsync(sender, async (msg) =>
                     {
                         await SendIrcMessageAsync(sender, msg);
                     });
+                }
+                // [추가] 2. !m o [맵ID] [스타일] 명령어 처리
+                else if (message.StartsWith("!m o "))
+                {
+                    // 예: "!m o 123456 jump"
+                    string[] parts = message.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                    // parts[0]="!m", parts[1]="o", parts[2]="123456", parts[3]="jump"
+                    if (parts.Length >= 4)
+                    {
+                        if (int.TryParse(parts[2], out int mapId))
+                        {
+                            string style = parts[3];
+                            Console.WriteLine($"[Chat] {sender} 맵 등록 시도: {mapId} -> {style}");
+
+                            _ = _botService.RegisterMapStyleAsync(sender, mapId, style, async (msg) =>
+                            {
+                                await SendIrcMessageAsync(sender, msg);
+                            });
+                        }
+                        else
+                        {
+                            _ = SendIrcMessageAsync(sender, "맵 번호는 숫자여야 합니다.");
+                        }
+                    }
+                    else
+                    {
+                        _ = SendIrcMessageAsync(sender, "사용법: !m o [맵번호] [스타일]");
+                    }
+                }
+
+                else if (message.StartsWith("!m r help"))
+                {
+                    await SendIrcMessageAsync(sender, "!m r start ▶ (최초실행시) 유저의 정보를 등록합니다. / (재실행시) 유저의 정보를 최신화합니다.");
+                    await SendIrcMessageAsync(sender, "!m o [맵번호] [스타일] ▶ [맵번호]를 [스타일]에 저장합니다. (저장된 내용은 모든 유저가 추천받을 수 있습니다.)");
+                    await SendIrcMessageAsync(sender, "== 사용예시 ▶ !m o 123456 tech");
+                    await SendIrcMessageAsync(sender, "== 스타일 종류 ▶ Farm, Generic, Stream, Tech, Flow, FingCon, LowAR");
                 }
             }
             catch { }
