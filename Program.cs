@@ -39,8 +39,9 @@ namespace Osu_MR_Bot
             Console.WriteLine("\n==================================================");
             Console.WriteLine(" [System] 봇이 실행 중입니다.");
             Console.WriteLine(" - 콘솔에 명령어를 입력하면 봇 자신에게 보낸 것으로 처리됩니다.");
-            // [수정] 안내 메시지 변경
             Console.WriteLine(" - 예: !m r start, !m o farm 12345 67890");
+            Console.WriteLine(" - [관리자] !list : 맵 기여 현황 확인");
+            Console.WriteLine(" - [관리자] !m r ban [ID] : 악성 유저 밴");
             Console.WriteLine(" - 'q' 입력 후 엔터: 프로그램 종료");
             Console.WriteLine("==================================================\n");
 
@@ -60,16 +61,32 @@ namespace Osu_MR_Bot
                     break;
                 }
 
-                // [추가] 관리자 전용 명령어 (!list)
+                // [관리자 전용] !list
                 if (trimmedInput.ToLower() == "!list")
                 {
                     Console.WriteLine("[System] 기여 현황을 조회합니다...");
                     string stats = await bot.GetMapContributionStatsAsync();
                     Console.WriteLine(stats);
-                    continue; // IRC 서비스로 넘기지 않고 루프 재시작
+                    continue;
                 }
 
-                // 입력된 내용을 그대로 봇 로직에 전달 (자신이 보낸 것으로 처리)
+                // [관리자 전용] 밴 명령어 처리 (!m r ban [UserId])
+                if (trimmedInput.ToLower().StartsWith("!m r ban "))
+                {
+                    string[] parts = trimmedInput.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    // parts[0]=!m, parts[1]=r, parts[2]=ban, parts[3]=UserId
+                    if (parts.Length == 4 && int.TryParse(parts[3], out int banUserId))
+                    {
+                        await bot.BanUserAsync(banUserId);
+                    }
+                    else
+                    {
+                        Console.WriteLine("[Error] 사용법: !m r ban [유저ID(숫자)]");
+                    }
+                    continue; // IRC로 보내지 않음
+                }
+
+                // 그 외 명령어는 봇 로직에 전달 (IRC 처리 포함)
                 Console.WriteLine($"[Manual] 콘솔 명령 실행: {trimmedInput}");
                 await ircService.ProcessCommandAsync(botUsername, trimmedInput);
             }

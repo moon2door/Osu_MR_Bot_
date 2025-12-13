@@ -1,9 +1,9 @@
 ﻿using System.Net.Http.Json;
 using Osu_MR_Bot.Models;
 using System.Text.Json.Serialization;
-using System.Collections.Generic; // List 사용을 위해 추가
-using System.Linq; // Count 등 사용
-using System.Text.Json; // JsonSerializer 사용을 위해 추가
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
 
 namespace Osu_MR_Bot.Services
 {
@@ -69,7 +69,69 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // [수정] start 명령어: 기존 난이도 설정을 유지하면서 업데이트
+        // [신규] 유저 밴 처리 (콘솔 전용)
+        public async Task BanUserAsync(int userId)
+        {
+            if (string.IsNullOrEmpty(_accessToken)) return;
+
+            try
+            {
+                string dbUrl = $"{_firebaseUrl}/banned_users/{userId}.json?auth={_firebaseSecret}";
+                var banData = new { BannedAt = DateTime.UtcNow, Reason = "Manual Ban" };
+
+                var response = await _httpClient.PutAsJsonAsync(dbUrl, banData);
+                if (response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"[System] 유저({userId})를 성공적으로 밴 처리했습니다.");
+                }
+                else
+                {
+                    Console.WriteLine($"[Error] 밴 처리 실패: {response.StatusCode}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] 밴 처리 중 오류: {ex.Message}");
+            }
+        }
+
+        // [신규] 밴 여부 확인 헬퍼
+        private async Task<bool> IsUserBannedAsync(int userId)
+        {
+            try
+            {
+                string dbUrl = $"{_firebaseUrl}/banned_users/{userId}.json?auth={_firebaseSecret}";
+                var response = await _httpClient.GetAsync(dbUrl);
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    // 데이터가 존재하면 밴 된 상태
+                    return !string.IsNullOrEmpty(content) && content != "null";
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // [신규] 유저 정보 조회 헬퍼 (중복 코드 제거용)
+        private async Task<OsuUser?> GetOsuUserAsync(string username)
+        {
+            try
+            {
+                string userUrl = $"https://osu.ppy.sh/api/v2/users/{username}/osu?key=username";
+                var userResponse = await _httpClient.GetAsync(userUrl);
+                if (userResponse.IsSuccessStatusCode)
+                {
+                    return await userResponse.Content.ReadFromJsonAsync<OsuUser>();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] 유저 조회 오류: {ex.Message}");
+            }
+            return null;
+        }
+
         public async Task ExecuteStartCommandAsync(string username, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken))
@@ -82,24 +144,24 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. 유저 정보 조회 (ID를 알아내기 위해 필수)
-                string userUrl = $"https://osu.ppy.sh/api/v2/users/{username}/osu?key=username";
-                var userResponse = await _httpClient.GetAsync(userUrl);
-
-                if (!userResponse.IsSuccessStatusCode)
+                var userData = await GetOsuUserAsync(username);
+                if (userData == null)
                 {
-                    Console.WriteLine($"[Error] 유저 조회 실패. 코드: {userResponse.StatusCode}");
                     if (onMessage != null) await onMessage("유저를 찾을 수 없습니다.");
                     return;
                 }
 
-                var userData = await userResponse.Content.ReadFromJsonAsync<OsuUser>();
-                if (userData == null) return;
+                // [밴 확인]
+                if (await IsUserBannedAsync(userData.Id))
+                {
+                    Console.WriteLine($"[Ignore] Banned User: {username} ({userData.Id})");
+                    return; // 밴 된 유저는 무시
+                }
 
                 Console.WriteLine($"[Info] 유저 식별: {userData.Username} (ID: {userData.Id})");
 
-                // 2. 기존 데이터 확인 (난이도 설정 유지 목적)
-                int currentDiffPref = 3; // 기본값 (어려움)
+                // 기존 데이터 확인
+                int currentDiffPref = 3;
                 bool isFirstTime = true;
 
                 string dbUrl = $"{_firebaseUrl}/users/{userData.Id}.json?auth={_firebaseSecret}";
@@ -115,16 +177,15 @@ namespace Osu_MR_Bot.Services
                         if (existingData != null)
                         {
                             isFirstTime = false;
-                            // [핵심] 기존 설정이 있으면 가져옵니다.
                             currentDiffPref = existingData.DifficultyPreference;
                         }
                     }
                 }
 
-                // 3. 메시지 전송
+                // 메시지 전송
                 if (isFirstTime && onMessage != null)
                 {
-                    await onMessage("반갑습니다. 해당 봇은 서버에 저장되어 있는 맵만 추천하니 참고해주시길 바랍니다.");
+                    await onMessage("반갑습니다. 해당 봇은 유저를 분석하여 수준에 맞는 곡을 추천해주는 봇입니다.");
                     await onMessage("명령어는 !m r help 를 통해 찾아 볼 수 있습니다.");
                     await onMessage("[분석중] 최초 1회에 한하여 유저를 분석중입니다.");
                 }
@@ -132,9 +193,9 @@ namespace Osu_MR_Bot.Services
                 {
                     await onMessage("[분석중] 해당 유저는 최초 실행이 아닙니다.");
                     await onMessage("[업데이트중] 기존에 저장되어 있던 내용을 업데이트 합니다.");
+                    await onMessage("명령어는 !m r help 를 통해 찾아 볼 수 있습니다.");
                 }
 
-                // 4. 데이터 저장 (기존 난이도 설정 포함)
                 var dataToSave = new UserBotData
                 {
                     UserId = userData.Id,
@@ -142,12 +203,11 @@ namespace Osu_MR_Bot.Services
                     CurrentPp = userData.Statistics.Pp,
                     GlobalRank = userData.Statistics.GlobalRank,
                     LastUpdated = DateTime.UtcNow,
-                    DifficultyPreference = currentDiffPref // 유지된 설정값 적용
+                    DifficultyPreference = currentDiffPref
                 };
 
                 await SaveToFirebaseAsync(dataToSave);
 
-                // 5. 완료 메시지
                 if (isFirstTime && onMessage != null)
                 {
                     await onMessage("[분석완료] 분석이 완료 되었습니다!");
@@ -165,7 +225,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // [신규] 난이도 설정 변경 (!m r diff [1~4])
         public async Task SetUserDifficultyAsync(string username, int diffLevel, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken)) return;
@@ -174,18 +233,20 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. 유저 ID 조회
-                string userUrl = $"https://osu.ppy.sh/api/v2/users/{username}/osu?key=username";
-                var userResponse = await _httpClient.GetAsync(userUrl);
-                if (!userResponse.IsSuccessStatusCode)
+                var userData = await GetOsuUserAsync(username);
+                if (userData == null)
                 {
                     if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다.");
                     return;
                 }
-                var userData = await userResponse.Content.ReadFromJsonAsync<OsuUser>();
-                if (userData == null) return;
 
-                // 2. DB에서 유저 데이터 가져오기
+                // [밴 확인]
+                if (await IsUserBannedAsync(userData.Id))
+                {
+                    Console.WriteLine($"[Ignore] Banned User: {username} ({userData.Id})");
+                    return;
+                }
+
                 string dbUrl = $"{_firebaseUrl}/users/{userData.Id}.json?auth={_firebaseSecret}";
                 var dbResponse = await _httpClient.GetAsync(dbUrl);
                 UserBotData? userBotData = null;
@@ -206,13 +267,11 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // 3. 설정 변경 및 저장
                 userBotData.DifficultyPreference = diffLevel;
-                userBotData.Username = userData.Username; // 이름도 최신화
+                userBotData.Username = userData.Username;
 
                 await SaveToFirebaseAsync(userBotData);
 
-                // 4. 완료 메시지
                 string diffName = diffLevel switch
                 {
                     1 => "1 (쉬움)",
@@ -239,7 +298,22 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. osu! API에서 맵 정보(SR) 가져오기
+                // [수정] 등록 전 유저 ID 확인 및 밴 체크
+                var userData = await GetOsuUserAsync(senderUsername);
+                if (userData == null)
+                {
+                    // 유저 정보를 못 찾으면 등록을 막거나 경고할 수 있음 (일단 로그만 남기고 진행할 수도 있으나 보안상 막는게 좋음)
+                    Console.WriteLine($"[Warning] 맵 등록 시도자의 정보를 찾을 수 없음: {senderUsername}");
+                    return;
+                }
+
+                if (await IsUserBannedAsync(userData.Id))
+                {
+                    Console.WriteLine($"[Ignore] Banned User trying to register map: {senderUsername} ({userData.Id})");
+                    return;
+                }
+
+                // 1. 맵 정보 가져오기
                 string mapUrl = $"https://osu.ppy.sh/api/v2/beatmaps/{mapId}";
                 var response = await _httpClient.GetAsync(mapUrl);
 
@@ -252,14 +326,12 @@ namespace Osu_MR_Bot.Services
                 var mapData = await response.Content.ReadFromJsonAsync<OsuBeatmap>();
                 if (mapData == null) return;
 
-                // [거름망 1] osu!standard 모드인지 확인
                 if (mapData.ModeInt != 0)
                 {
                     if (onMessage != null) await onMessage($"[등록실패] osu!standard 모드의 맵만 등록 가능합니다.");
                     return;
                 }
 
-                // [거름망 2] Ranked / Loved / Approved 맵인지 확인
                 var validStatuses = new[] { "ranked", "loved", "approved" };
                 if (!validStatuses.Contains(mapData.Status))
                 {
@@ -270,10 +342,8 @@ namespace Osu_MR_Bot.Services
                 int difficultyFloor = (int)Math.Floor(mapData.DifficultyRating);
                 string styleLower = style.ToLower();
 
-                // 3. Firebase 저장 경로 설정
                 string dbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}/{mapId}.json?auth={_firebaseSecret}";
 
-                // [추가] 이미 존재하는지 확인
                 var checkResponse = await _httpClient.GetAsync(dbUrl);
                 if (checkResponse.IsSuccessStatusCode)
                 {
@@ -282,11 +352,10 @@ namespace Osu_MR_Bot.Services
                     {
                         Console.WriteLine($"[Info] 이미 등록된 맵입니다: {mapId} ({styleLower})");
                         if (onMessage != null) await onMessage($"[{mapId}] 이미 있는 곡입니다!");
-                        return; // 함수 종료
+                        return;
                     }
                 }
 
-                // 저장할 데이터
                 var mapInfoToSave = new
                 {
                     Title = mapData.BeatmapSet.Title,
@@ -296,7 +365,6 @@ namespace Osu_MR_Bot.Services
                     AddedBy = senderUsername
                 };
 
-                // PUT으로 저장
                 var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, mapInfoToSave);
 
                 if (saveResponse.IsSuccessStatusCode)
@@ -324,6 +392,14 @@ namespace Osu_MR_Bot.Services
             Console.WriteLine($"[Command] 일괄 맵 등록 요청: {mapIds.Count}개, Style={style}, By={senderUsername}");
             if (onMessage != null) await onMessage($"[처리중] {mapIds.Count}개의 맵을 '{style}' 스타일로 등록을 시도합니다...");
 
+            // [수정] 일괄 등록 전 밴 체크
+            var userData = await GetOsuUserAsync(senderUsername);
+            if (userData == null || await IsUserBannedAsync(userData.Id))
+            {
+                Console.WriteLine($"[Ignore] Banned User or Not Found: {senderUsername}");
+                return;
+            }
+
             int successCount = 0;
             int duplicateCount = 0;
             int failCount = 0;
@@ -350,7 +426,6 @@ namespace Osu_MR_Bot.Services
                         continue;
                     }
 
-                    // [거름망 적용]
                     var validStatuses = new[] { "ranked", "loved", "approved" };
                     if (mapData.ModeInt != 0 || !validStatuses.Contains(mapData.Status))
                     {
@@ -364,7 +439,6 @@ namespace Osu_MR_Bot.Services
 
                     string dbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}/{mapId}.json?auth={_firebaseSecret}";
 
-                    // 중복 확인
                     var checkResponse = await _httpClient.GetAsync(dbUrl);
                     if (checkResponse.IsSuccessStatusCode)
                     {
@@ -386,14 +460,8 @@ namespace Osu_MR_Bot.Services
                     };
 
                     var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, mapInfoToSave);
-                    if (saveResponse.IsSuccessStatusCode)
-                    {
-                        successCount++;
-                    }
-                    else
-                    {
-                        failCount++;
-                    }
+                    if (saveResponse.IsSuccessStatusCode) successCount++;
+                    else failCount++;
                 }
                 catch (Exception ex)
                 {
@@ -402,13 +470,11 @@ namespace Osu_MR_Bot.Services
                 }
             }
 
-            // 결과 리포트
             string resultMsg = $"[완료] 총 {mapIds.Count}개 중 성공: {successCount}, 중복: {duplicateCount}, 조건미달: {filterCount}, 오류: {failCount}";
             Console.WriteLine(resultMsg);
             if (onMessage != null) await onMessage(resultMsg);
         }
 
-        // [수정] 맵 추천 기능 (!m r req [style]) - DB에 저장된 난이도 설정값 사용
         public async Task RecommendMapAsync(string username, string style, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken)) return;
@@ -417,20 +483,20 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. 유저 정보 조회
-                string userUrl = $"https://osu.ppy.sh/api/v2/users/{username}/osu?key=username";
-                var userResponse = await _httpClient.GetAsync(userUrl);
-
-                if (!userResponse.IsSuccessStatusCode)
+                var userData = await GetOsuUserAsync(username);
+                if (userData == null)
                 {
                     if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다.");
                     return;
                 }
 
-                var userData = await userResponse.Content.ReadFromJsonAsync<OsuUser>();
-                if (userData == null) return;
+                // [밴 확인]
+                if (await IsUserBannedAsync(userData.Id))
+                {
+                    Console.WriteLine($"[Ignore] Banned User: {username} ({userData.Id})");
+                    return;
+                }
 
-                // 2. Firebase 유저 데이터 조회
                 string userDbUrl = $"{_firebaseUrl}/users/{userData.Id}.json?auth={_firebaseSecret}";
                 var dbResponse = await _httpClient.GetAsync(userDbUrl);
 
@@ -438,10 +504,8 @@ namespace Osu_MR_Bot.Services
                 if (dbResponse.IsSuccessStatusCode)
                 {
                     var content = await dbResponse.Content.ReadAsStringAsync();
-
                     if (!string.IsNullOrEmpty(content) && content != "null")
                     {
-                        // JSON 대소문자 무시 (필수)
                         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                         userBotData = JsonSerializer.Deserialize<UserBotData>(content, options);
                     }
@@ -453,11 +517,9 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // 3. 추천 난이도 계산
                 double currentPp = (double)userBotData.CurrentPp;
                 double baseStarRating = Math.Pow(currentPp, 0.4) * 0.195;
 
-                // DB에서 설정값(1~4)을 가져와 오프셋 적용
                 double offset = 0.0;
                 string diffName = "어려움(기본)";
                 int pref = userBotData.DifficultyPreference;
@@ -476,7 +538,6 @@ namespace Osu_MR_Bot.Services
 
                 Console.WriteLine($"[Info] {username} (PP: {currentPp}, Pref: {pref}) -> Target: {targetStarRating:F2} (Floor: {difficultyFloor})");
 
-                // 4. DB 조회
                 string styleLower = style.ToLower();
                 string mapDbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}.json?auth={_firebaseSecret}";
 
@@ -494,7 +555,6 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // JSON 대소문자 무시 (필수)
                 var optionsMap = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var mapsDict = JsonSerializer.Deserialize<Dictionary<string, DbMapInfo>>(mapContent, optionsMap);
 
@@ -504,14 +564,11 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // 5. 랜덤 선택
                 var randomEntry = mapsDict.ElementAt(_random.Next(mapsDict.Count));
                 string mapId = randomEntry.Key;
                 DbMapInfo mapInfo = randomEntry.Value;
 
-                // 6. 메시지 전송
                 string link = $"https://osu.ppy.sh/b/{mapId}";
-                // F2 포맷팅 적용
                 string message = $"[추천] {mapInfo.Title} [{mapInfo.StarRating:F2}★] - {link}";
 
                 if (onMessage != null) await onMessage(message);
@@ -519,6 +576,73 @@ namespace Osu_MR_Bot.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"[Error] 맵 추천 중 오류: {ex.Message}");
+                if (onMessage != null) await onMessage("오류가 발생했습니다.");
+            }
+        }
+
+        public async Task RequestMapDeletionAsync(string requester, int mapId, Func<string, Task>? onMessage = null)
+        {
+            if (string.IsNullOrEmpty(_accessToken)) return;
+
+            Console.WriteLine($"[Command] '{requester}' 맵 삭제 요청: {mapId}");
+
+            try
+            {
+                // [밴 확인]
+                var userData = await GetOsuUserAsync(requester);
+                if (userData == null || await IsUserBannedAsync(userData.Id))
+                {
+                    Console.WriteLine($"[Ignore] Banned User or Not Found: {requester}");
+                    return;
+                }
+
+                string mapUrl = $"https://osu.ppy.sh/api/v2/beatmaps/{mapId}";
+                var response = await _httpClient.GetAsync(mapUrl);
+
+                string mapTitle = "Unknown Map";
+                string mapArtist = "Unknown Artist";
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var mapData = await response.Content.ReadFromJsonAsync<OsuBeatmap>();
+                    if (mapData != null)
+                    {
+                        mapTitle = mapData.BeatmapSet.Title;
+                        mapArtist = mapData.BeatmapSet.Artist;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[Warning] 삭제 요청된 맵({mapId}) 정보를 가져올 수 없습니다.");
+                }
+
+                string dbUrl = $"{_firebaseUrl}/delete_requests/{mapId}.json?auth={_firebaseSecret}";
+
+                var requestData = new
+                {
+                    MapId = mapId,
+                    Title = mapTitle,
+                    Artist = mapArtist,
+                    RequestedBy = requester,
+                    RequestedAt = DateTime.UtcNow
+                };
+
+                var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, requestData);
+
+                if (saveResponse.IsSuccessStatusCode)
+                {
+                    string msg = $"[요청완료] {mapId}번 맵의 삭제 요청이 접수되었습니다. 관리자 검토 후 처리됩니다.";
+                    Console.WriteLine($"[Delete Request] {requester} -> {mapId} ({mapTitle})");
+                    if (onMessage != null) await onMessage(msg);
+                }
+                else
+                {
+                    if (onMessage != null) await onMessage("요청 저장에 실패했습니다.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] 삭제 요청 처리 중 오류: {ex.Message}");
                 if (onMessage != null) await onMessage("오류가 발생했습니다.");
             }
         }
@@ -620,7 +744,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // [내부 모델 클래스들]
         private class DbMapInfo
         {
             [JsonPropertyName("Title")]

@@ -218,16 +218,42 @@ namespace Osu_MR_Bot.Services
                     await SendIrcMessageAsync(sender, "[Usage] !m o [스타일] [맵번호] ... [맵번호]");
                 }
             }
+
+            // [신규] 4. !m r del [맵번호] (삭제 요청)
+            else if (cmd.StartsWith("!m r del "))
+            {
+                string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                // parts[0]=!m, parts[1]=r, parts[2]=del, parts[3]=mapId
+
+                if (parts.Length == 4 && int.TryParse(parts[3], out int mapId))
+                {
+                    Console.WriteLine($"[Command] {sender} 삭제 요청: {mapId}");
+                    _ = _botService.RequestMapDeletionAsync(sender, mapId, async (msg) =>
+                    {
+                        await SendIrcMessageAsync(sender, msg);
+                    });
+                }
+                else
+                {
+                    await SendIrcMessageAsync(sender, "[Usage] !m r del [맵번호]");
+                }
+            }
+
             // 4. !m r help
             else if (cmd.StartsWith("!m r help"))
             {
-                await SendIrcMessageAsync(sender, "=== Osu! MR Bot 도움말 ===");
+                await SendIrcMessageAsync(sender, "=== Osu! MR Bot 명령어 도움말 ===");
                 await SendIrcMessageAsync(sender, "!m r start : 봇 등록 및 정보 갱신");
-                await SendIrcMessageAsync(sender, "!m r req [스타일] : 해당 스타일에 맞는 맵 추천");
                 await SendIrcMessageAsync(sender, "!m r diff [1~4]: 난이도 변경");
                 await SendIrcMessageAsync(sender, "└ 난이도: easy(1), normal(2), hard(3), expert(4)");
+                await SendIrcMessageAsync(sender, "!m r req [스타일] : 해당 스타일에 맞는 맵 추천");
                 await SendIrcMessageAsync(sender, "!m o [스타일] [맵ID] ... : 맵 스타일 등록 (여러 개 가능)");
                 await SendIrcMessageAsync(sender, $"└ 스타일 종류 : {string.Join(", ", AllowedStyles)}");
+                await SendIrcMessageAsync(sender, "==============================================");
+                await SendIrcMessageAsync(sender, "=== 맵 추가 관련 ===");
+                await SendIrcMessageAsync(sender, "플레이 했는데, 스타일과 맞지 않는 맵이 있는 경우");
+                await SendIrcMessageAsync(sender, "!m r del [맵번호] 를 입력하여 주세요");
+                await SendIrcMessageAsync(sender, "관리자가 확인 후 삭제하겠습니다.");
             }
         }
 
