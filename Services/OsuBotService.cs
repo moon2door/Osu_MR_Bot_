@@ -701,27 +701,43 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                var response = await _httpClient.GetFromJsonAsync<Dictionary<string, Dictionary<string, Dictionary<string, DbMapInfo>>>>(dbUrl);
+                var jsonString = await _httpClient.GetStringAsync(dbUrl);
 
-                if (response == null) return "등록된 맵 데이터가 없습니다.";
+                if (string.IsNullOrEmpty(jsonString) || jsonString == "null")
+                    return "등록된 맵 데이터가 없습니다.";
+
+                using var doc = JsonDocument.Parse(jsonString);
+                var root = doc.RootElement;
 
                 var stats = new Dictionary<string, int>();
                 int totalMaps = 0;
 
-                foreach (var stylePair in response)
-                {
-                    foreach (var diffPair in stylePair.Value)
-                    {
-                        foreach (var mapPair in diffPair.Value)
-                        {
-                            var info = mapPair.Value;
-                            if (info != null && !string.IsNullOrEmpty(info.AddedBy))
-                            {
-                                if (!stats.ContainsKey(info.AddedBy))
-                                    stats[info.AddedBy] = 0;
+                // [수정] 대소문자 무시 옵션 생성 (addedBy vs AddedBy 매칭 해결)
+                var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-                                stats[info.AddedBy]++;
-                                totalMaps++;
+                // Level 1: Styles
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var styleProp in root.EnumerateObject())
+                    {
+                        var diffNode = styleProp.Value;
+
+                        // Level 2: Difficulty (Object or Array)
+                        if (diffNode.ValueKind == JsonValueKind.Object)
+                        {
+                            foreach (var diffProp in diffNode.EnumerateObject())
+                            {
+                                ProcessMapsForStats(diffProp.Value, stats, ref totalMaps, jsonOptions);
+                            }
+                        }
+                        else if (diffNode.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var diffElement in diffNode.EnumerateArray())
+                            {
+                                if (diffElement.ValueKind != JsonValueKind.Null && diffElement.ValueKind != JsonValueKind.Undefined)
+                                {
+                                    ProcessMapsForStats(diffElement, stats, ref totalMaps, jsonOptions);
+                                }
                             }
                         }
                     }
@@ -742,7 +758,54 @@ namespace Osu_MR_Bot.Services
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[Error] Stats Parse Error: {ex}");
                 return $"[Error] 통계 조회 중 오류 발생: {ex.Message}";
+            }
+        }
+
+        private void ProcessMapsForStats(JsonElement mapsNode, Dictionary<string, int> stats, ref int totalMaps, JsonSerializerOptions options)
+        {
+            // Level 3: Maps (Object)
+            if (mapsNode.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var mapProp in mapsNode.EnumerateObject())
+                {
+                    try
+                    {
+                        // 옵션을 사용하여 대소문자 무시하고 매핑
+                        var info = mapProp.Value.Deserialize<DbMapInfo>(options);
+                        if (info != null && !string.IsNullOrEmpty(info.AddedBy))
+                        {
+                            string user = info.AddedBy;
+                            if (!stats.ContainsKey(user)) stats[user] = 0;
+                            stats[user]++;
+                            totalMaps++;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            // Level 3: Maps (Array - 드문 경우)
+            else if (mapsNode.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var mapElement in mapsNode.EnumerateArray())
+                {
+                    if (mapElement.ValueKind == JsonValueKind.Object)
+                    {
+                        try
+                        {
+                            var info = mapElement.Deserialize<DbMapInfo>(options);
+                            if (info != null && !string.IsNullOrEmpty(info.AddedBy))
+                            {
+                                string user = info.AddedBy;
+                                if (!stats.ContainsKey(user)) stats[user] = 0;
+                                stats[user]++;
+                                totalMaps++;
+                            }
+                        }
+                        catch { }
+                    }
+                }
             }
         }
 
