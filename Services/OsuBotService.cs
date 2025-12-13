@@ -483,20 +483,12 @@ namespace Osu_MR_Bot.Services
 
             try
             {
+                // 1. 유저 정보 및 밴 확인
                 var userData = await GetOsuUserAsync(username);
-                if (userData == null)
-                {
-                    if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다.");
-                    return;
-                }
+                if (userData == null) { if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다."); return; }
+                if (await IsUserBannedAsync(userData.Id)) { Console.WriteLine($"[Ignore] Banned User: {username}"); return; }
 
-                // [밴 확인]
-                if (await IsUserBannedAsync(userData.Id))
-                {
-                    Console.WriteLine($"[Ignore] Banned User: {username} ({userData.Id})");
-                    return;
-                }
-
+                // 2. Firebase 유저 데이터 조회
                 string userDbUrl = $"{_firebaseUrl}/users/{userData.Id}.json?auth={_firebaseSecret}";
                 var dbResponse = await _httpClient.GetAsync(userDbUrl);
 
@@ -511,12 +503,12 @@ namespace Osu_MR_Bot.Services
                     }
                 }
 
-                if (userBotData == null)
-                {
-                    if (onMessage != null) await onMessage("!m r start를 입력해서 유저 정보를 먼저 저장해 주세요.");
-                    return;
-                }
+                if (userBotData == null) { if (onMessage != null) await onMessage("!m r start를 입력해서 유저 정보를 먼저 저장해 주세요."); return; }
 
+                // [안전장치] 리스트가 null이면 초기화
+                if (userBotData.RecentMaps == null) userBotData.RecentMaps = new List<int>();
+
+                // 3. 추천 난이도 계산
                 double currentPp = (double)userBotData.CurrentPp;
                 double baseStarRating = Math.Pow(currentPp, 0.4) * 0.195;
 
@@ -530,7 +522,7 @@ namespace Osu_MR_Bot.Services
                     case 2: offset = -0.3; diffName = "보통"; break;
                     case 3: offset = 0.0; diffName = "어려움"; break;
                     case 4: offset = 0.2; diffName = "매우 어려움"; break;
-                    default: offset = 0.0; diffName = "어려움(초기화)"; break;
+                    default: offset = 0.0; diffName = "어려움"; break;
                 }
 
                 double targetStarRating = Math.Max(0, baseStarRating + offset);
@@ -538,15 +530,12 @@ namespace Osu_MR_Bot.Services
 
                 Console.WriteLine($"[Info] {username} (PP: {currentPp}, Pref: {pref}) -> Target: {targetStarRating:F2} (Floor: {difficultyFloor})");
 
+                // 4. DB 맵 목록 조회
                 string styleLower = style.ToLower();
                 string mapDbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}.json?auth={_firebaseSecret}";
 
                 var mapResponse = await _httpClient.GetAsync(mapDbUrl);
-                if (!mapResponse.IsSuccessStatusCode)
-                {
-                    if (onMessage != null) await onMessage($"[{styleLower}] 해당 난이도({difficultyFloor}성)에 등록된 맵을 가져오는데 실패했습니다.");
-                    return;
-                }
+                if (!mapResponse.IsSuccessStatusCode) { if (onMessage != null) await onMessage($"[{styleLower}] 해당 난이도({difficultyFloor}성) 데이터를 가져올 수 없습니다."); return; }
 
                 var mapContent = await mapResponse.Content.ReadAsStringAsync();
                 if (string.IsNullOrEmpty(mapContent) || mapContent == "null")
@@ -564,11 +553,64 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                var randomEntry = mapsDict.ElementAt(_random.Next(mapsDict.Count));
-                string mapId = randomEntry.Key;
-                DbMapInfo mapInfo = randomEntry.Value;
+                // ==========================================================
+                // [신규 로직] 중복 방지 필터링
+                // ==========================================================
 
-                string link = $"https://osu.ppy.sh/b/{mapId}";
+                // 전체 후보 맵 ID 목록
+                List<string> allCandidateIds = mapsDict.Keys.ToList();
+
+                // 유저가 최근에 플레이한 맵 ID 목록 (문자열로 변환)
+                HashSet<string> seenMapIds = userBotData.RecentMaps.Select(id => id.ToString()).ToHashSet();
+
+                // 안 해본 맵(Available)만 걸러내기
+                List<string> availableIds = allCandidateIds.Where(id => !seenMapIds.Contains(id)).ToList();
+
+                string selectedMapId;
+                DbMapInfo mapInfo;
+
+                if (availableIds.Count > 0)
+                {
+                    // 안 해본 맵이 있다면 거기서 뽑기
+                    int index = _random.Next(availableIds.Count);
+                    selectedMapId = availableIds[index];
+                    Console.WriteLine($"[Logic] 새로운 맵 추천 ({availableIds.Count}개 중 선택)");
+                }
+                else
+                {
+                    // 만약 이 난이도의 맵을 다 해봤다면? -> 전체 목록에서 랜덤 (재탕)
+                    int index = _random.Next(allCandidateIds.Count);
+                    selectedMapId = allCandidateIds[index];
+                    Console.WriteLine($"[Logic] 해당 구간 맵 고갈. 전체({allCandidateIds.Count}개) 중 재추천.");
+                }
+
+                mapInfo = mapsDict[selectedMapId];
+
+                // ==========================================================
+                // [신규 로직] 추천 기록 저장 (History Update)
+                // ==========================================================
+
+                int mapIdInt = int.Parse(selectedMapId);
+
+                // 리스트에 이미 있다면 제거하고 맨 뒤로 보냄 (최신화)
+                if (userBotData.RecentMaps.Contains(mapIdInt))
+                {
+                    userBotData.RecentMaps.Remove(mapIdInt);
+                }
+                userBotData.RecentMaps.Add(mapIdInt);
+
+                // 리스트 크기 제한 (최근 50개까지만 기억)
+                if (userBotData.RecentMaps.Count > 50)
+                {
+                    userBotData.RecentMaps.RemoveAt(0); // 가장 오래된 것 삭제
+                }
+
+                // 변경된 유저 정보(History 포함) 저장
+                // 여기서 Save를 호출해야 다음 번에 기억함
+                await SaveToFirebaseAsync(userBotData);
+
+                // 6. 메시지 전송
+                string link = $"https://osu.ppy.sh/b/{selectedMapId}";
                 string message = $"[추천] {mapInfo.Title} [{mapInfo.StarRating:F2}★] - {link}";
 
                 if (onMessage != null) await onMessage(message);

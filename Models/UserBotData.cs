@@ -21,9 +21,10 @@ namespace Osu_MR_Bot.Models
         [JsonPropertyName("last_updated")]
         public DateTime LastUpdated { get; set; }
 
-        // [신규] 난이도 선호도 (1:쉬움, 2:보통, 3:어려움, 4:매우어려움)
-        // 기본값은 3 (어려움/기본)
         [JsonPropertyName("difficulty_preference")]
         public int DifficultyPreference { get; set; } = 3;
+
+        [JsonPropertyName("recent_maps")]
+        public List<int> RecentMaps { get; set; } = new List<int>();
     }
 }
