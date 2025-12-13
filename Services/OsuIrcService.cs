@@ -99,21 +99,75 @@ namespace Osu_MR_Bot.Services
                     await SendIrcMessageAsync(sender, msg);
                 });
             }
-            // 2. !m o [스타일] [맵ID...] (명령어 구조 변경)
+
+            // [신규] 2. !m r diff [1~4] (난이도 설정)
+            else if (cmd.StartsWith("!m r diff "))
+            {
+                string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                // parts[0]=!m, parts[1]=r, parts[2]=diff, parts[3]=number
+
+                if (parts.Length == 4 && int.TryParse(parts[3], out int diffLevel))
+                {
+                    if (diffLevel >= 1 && diffLevel <= 4)
+                    {
+                        Console.WriteLine($"[Command] {sender} 난이도 변경: {diffLevel}");
+                        _ = _botService.SetUserDifficultyAsync(sender, diffLevel, async (msg) =>
+                        {
+                            await SendIrcMessageAsync(sender, msg);
+                        });
+                    }
+                    else
+                    {
+                        await SendIrcMessageAsync(sender, "[Error] 난이도는 1~4 사이의 숫자여야 합니다.");
+                    }
+                }
+                else
+                {
+                    await SendIrcMessageAsync(sender, "[Usage] !m r diff [1(쉬움)~4(매우어려움)]");
+                }
+            }
+
+            // [수정] 3. !m r req [스타일] (난이도 인자 제거)
+            else if (cmd.StartsWith("!m r req "))
+            {
+                string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                // parts[0]=!m, parts[1]=r, parts[2]=req, parts[3]=style
+
+                if (parts.Length >= 4)
+                {
+                    string inputStyle = parts[3];
+
+                    if (Array.Exists(AllowedStyles, s => s.Equals(inputStyle, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        Console.WriteLine($"[Command] {sender} 맵 추천 요청: {inputStyle}");
+                        // 난이도는 내부적으로 DB에서 조회
+                        _ = _botService.RecommendMapAsync(sender, inputStyle, async (msg) =>
+                        {
+                            await SendIrcMessageAsync(sender, msg);
+                        });
+                    }
+                    else
+                    {
+                        await SendIrcMessageAsync(sender, $"[Error] 유효하지 않은 스타일입니다. ({string.Join(", ", AllowedStyles)})");
+                    }
+                }
+                else
+                {
+                    await SendIrcMessageAsync(sender, "[Usage] !m r req [스타일]");
+                }
+            }
+
+            // 3. !m o [스타일] [맵ID...]
             else if (cmd.StartsWith("!m o "))
             {
                 string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-                // 최소 길이 4: !m o [스타일] [맵ID]
                 if (parts.Length >= 4)
                 {
-                    // 세 번째 요소(인덱스 2)를 스타일로 간주
                     string inputStyle = parts[2];
 
-                    // 스타일 유효성 검사 (대소문자 무시)
                     if (Array.Exists(AllowedStyles, s => s.Equals(inputStyle, StringComparison.OrdinalIgnoreCase)))
                     {
-                        // 네 번째 요소(인덱스 3)부터 끝까지 맵 ID로 간주
                         List<int> mapIds = new List<int>();
                         bool allParsed = true;
 
@@ -132,7 +186,6 @@ namespace Osu_MR_Bot.Services
 
                         if (allParsed && mapIds.Count > 0)
                         {
-                            // 1개면 단일 등록, 여러 개면 일괄 등록 호출
                             if (mapIds.Count == 1)
                             {
                                 Console.WriteLine($"[Command] {sender} 맵 등록 시도: {mapIds[0]} -> {inputStyle}");
@@ -165,14 +218,16 @@ namespace Osu_MR_Bot.Services
                     await SendIrcMessageAsync(sender, "[Usage] !m o [스타일] [맵번호] ... [맵번호]");
                 }
             }
-            // 3. !m r help
+            // 4. !m r help
             else if (cmd.StartsWith("!m r help"))
             {
                 await SendIrcMessageAsync(sender, "=== Osu! MR Bot 도움말 ===");
                 await SendIrcMessageAsync(sender, "!m r start : 봇 등록 및 정보 갱신");
-                // 도움말 메시지 수정
+                await SendIrcMessageAsync(sender, "!m r req [스타일] : 해당 스타일에 맞는 맵 추천");
+                await SendIrcMessageAsync(sender, "!m r diff [1~4]: 난이도 변경");
+                await SendIrcMessageAsync(sender, "└ 난이도: easy(1), normal(2), hard(3), expert(4)");
                 await SendIrcMessageAsync(sender, "!m o [스타일] [맵ID] ... : 맵 스타일 등록 (여러 개 가능)");
-                await SendIrcMessageAsync(sender, $"└ 스타일: {string.Join(", ", AllowedStyles)}");
+                await SendIrcMessageAsync(sender, $"└ 스타일 종류 : {string.Join(", ", AllowedStyles)}");
             }
         }
 

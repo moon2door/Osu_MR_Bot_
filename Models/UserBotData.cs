@@ -18,11 +18,12 @@ namespace Osu_MR_Bot.Models
         [JsonPropertyName("global_rank")]
         public int? GlobalRank { get; set; }
 
-        // [삭제] Top 50 퍼포먼스 저장 부분 삭제
-        // [JsonPropertyName("top_100_scores")]
-        // public List<OsuScore> Top100Scores { get; set; } 
-
         [JsonPropertyName("last_updated")]
         public DateTime LastUpdated { get; set; }
+
+        // [신규] 난이도 선호도 (1:쉬움, 2:보통, 3:어려움, 4:매우어려움)
+        // 기본값은 3 (어려움/기본)
+        [JsonPropertyName("difficulty_preference")]
+        public int DifficultyPreference { get; set; } = 3;
     }
 }
