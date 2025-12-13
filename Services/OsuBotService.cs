@@ -69,7 +69,7 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // [신규] 유저 밴 처리 (콘솔 전용)
+        // 유저 밴 처리
         public async Task BanUserAsync(int userId)
         {
             if (string.IsNullOrEmpty(_accessToken)) return;
@@ -81,13 +81,9 @@ namespace Osu_MR_Bot.Services
 
                 var response = await _httpClient.PutAsJsonAsync(dbUrl, banData);
                 if (response.IsSuccessStatusCode)
-                {
                     Console.WriteLine($"[System] 유저({userId})를 성공적으로 밴 처리했습니다.");
-                }
                 else
-                {
                     Console.WriteLine($"[Error] 밴 처리 실패: {response.StatusCode}");
-                }
             }
             catch (Exception ex)
             {
@@ -95,7 +91,6 @@ namespace Osu_MR_Bot.Services
             }
         }
 
-        // [신규] 밴 여부 확인 헬퍼
         private async Task<bool> IsUserBannedAsync(int userId)
         {
             try
@@ -105,7 +100,6 @@ namespace Osu_MR_Bot.Services
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsStringAsync();
-                    // 데이터가 존재하면 밴 된 상태
                     return !string.IsNullOrEmpty(content) && content != "null";
                 }
             }
@@ -113,7 +107,6 @@ namespace Osu_MR_Bot.Services
             return false;
         }
 
-        // [신규] 유저 정보 조회 헬퍼 (중복 코드 제거용)
         private async Task<OsuUser?> GetOsuUserAsync(string username)
         {
             try
@@ -151,16 +144,14 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // [밴 확인]
                 if (await IsUserBannedAsync(userData.Id))
                 {
                     Console.WriteLine($"[Ignore] Banned User: {username} ({userData.Id})");
-                    return; // 밴 된 유저는 무시
+                    return;
                 }
 
                 Console.WriteLine($"[Info] 유저 식별: {userData.Username} (ID: {userData.Id})");
 
-                // 기존 데이터 확인
                 int currentDiffPref = 3;
                 bool isFirstTime = true;
 
@@ -182,10 +173,9 @@ namespace Osu_MR_Bot.Services
                     }
                 }
 
-                // 메시지 전송
                 if (isFirstTime && onMessage != null)
                 {
-                    await onMessage("반갑습니다. 해당 봇은 유저를 분석하여 수준에 맞는 곡을 추천해주는 봇입니다.");
+                    await onMessage("반갑습니다. 해당 봇은 서버에 저장되어 있는 맵만 추천하니 참고해주시길 바랍니다.");
                     await onMessage("명령어는 !m r help 를 통해 찾아 볼 수 있습니다.");
                     await onMessage("[분석중] 최초 1회에 한하여 유저를 분석중입니다.");
                 }
@@ -193,7 +183,6 @@ namespace Osu_MR_Bot.Services
                 {
                     await onMessage("[분석중] 해당 유저는 최초 실행이 아닙니다.");
                     await onMessage("[업데이트중] 기존에 저장되어 있던 내용을 업데이트 합니다.");
-                    await onMessage("명령어는 !m r help 를 통해 찾아 볼 수 있습니다.");
                 }
 
                 var dataToSave = new UserBotData
@@ -240,7 +229,6 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // [밴 확인]
                 if (await IsUserBannedAsync(userData.Id))
                 {
                     Console.WriteLine($"[Ignore] Banned User: {username} ({userData.Id})");
@@ -290,6 +278,7 @@ namespace Osu_MR_Bot.Services
             }
         }
 
+        // [수정] 맵 등록 (4성 미만 필터 추가)
         public async Task RegisterMapStyleAsync(string senderUsername, int mapId, string style, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken)) return;
@@ -298,22 +287,36 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // [수정] 등록 전 유저 ID 확인 및 밴 체크
                 var userData = await GetOsuUserAsync(senderUsername);
-                if (userData == null)
+                if (userData == null || await IsUserBannedAsync(userData.Id)) return;
+
+                // 1. 이미 등록된 맵인지 확인 (map_index 조회)
+                string indexUrl = $"{_firebaseUrl}/map_index/{mapId}.json?auth={_firebaseSecret}";
+                var indexResponse = await _httpClient.GetAsync(indexUrl);
+
+                if (indexResponse.IsSuccessStatusCode)
                 {
-                    // 유저 정보를 못 찾으면 등록을 막거나 경고할 수 있음 (일단 로그만 남기고 진행할 수도 있으나 보안상 막는게 좋음)
-                    Console.WriteLine($"[Warning] 맵 등록 시도자의 정보를 찾을 수 없음: {senderUsername}");
-                    return;
+                    var content = await indexResponse.Content.ReadAsStringAsync();
+                    if (!string.IsNullOrEmpty(content) && content != "null")
+                    {
+                        var indexData = JsonSerializer.Deserialize<MapIndexInfo>(content);
+                        if (indexData != null)
+                        {
+                            string registeredStyle = indexData.Style;
+                            if (registeredStyle.Equals(style, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (onMessage != null) await onMessage($"[{mapId}] 이미 해당 스타일에 등록된 맵입니다.");
+                            }
+                            else
+                            {
+                                if (onMessage != null) await onMessage($"[{mapId}] 이미 [{registeredStyle}] 스타일에 추가되어 있습니다.");
+                            }
+                            return;
+                        }
+                    }
                 }
 
-                if (await IsUserBannedAsync(userData.Id))
-                {
-                    Console.WriteLine($"[Ignore] Banned User trying to register map: {senderUsername} ({userData.Id})");
-                    return;
-                }
-
-                // 1. 맵 정보 가져오기
+                // 2. 맵 정보 가져오기
                 string mapUrl = $"https://osu.ppy.sh/api/v2/beatmaps/{mapId}";
                 var response = await _httpClient.GetAsync(mapUrl);
 
@@ -326,12 +329,14 @@ namespace Osu_MR_Bot.Services
                 var mapData = await response.Content.ReadFromJsonAsync<OsuBeatmap>();
                 if (mapData == null) return;
 
+                // [거름망 1] 모드 확인
                 if (mapData.ModeInt != 0)
                 {
                     if (onMessage != null) await onMessage($"[등록실패] osu!standard 모드의 맵만 등록 가능합니다.");
                     return;
                 }
 
+                // [거름망 2] Ranked 상태 확인
                 var validStatuses = new[] { "ranked", "loved", "approved" };
                 if (!validStatuses.Contains(mapData.Status))
                 {
@@ -339,22 +344,18 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
+                // [신규] [거름망 3] 4성 미만 확인
+                if (mapData.DifficultyRating < 4.0)
+                {
+                    if (onMessage != null) await onMessage($"[등록실패] 4성 미만의 맵은 등록할 수 없습니다. (현재: {mapData.DifficultyRating:F2}★)");
+                    return;
+                }
+
                 int difficultyFloor = (int)Math.Floor(mapData.DifficultyRating);
                 string styleLower = style.ToLower();
 
+                // 3. 저장
                 string dbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}/{mapId}.json?auth={_firebaseSecret}";
-
-                var checkResponse = await _httpClient.GetAsync(dbUrl);
-                if (checkResponse.IsSuccessStatusCode)
-                {
-                    string existingContent = await checkResponse.Content.ReadAsStringAsync();
-                    if (!string.IsNullOrEmpty(existingContent) && existingContent != "null")
-                    {
-                        Console.WriteLine($"[Info] 이미 등록된 맵입니다: {mapId} ({styleLower})");
-                        if (onMessage != null) await onMessage($"[{mapId}] 이미 있는 곡입니다!");
-                        return;
-                    }
-                }
 
                 var mapInfoToSave = new
                 {
@@ -367,9 +368,13 @@ namespace Osu_MR_Bot.Services
 
                 var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, mapInfoToSave);
 
+                // 4. 인덱스 저장
                 if (saveResponse.IsSuccessStatusCode)
                 {
-                    string msg = $"[등록완료] '{mapData.BeatmapSet.Title}' 맵이 '{styleLower}' 스타일 / '{difficultyFloor}성' 구간에 등록되었습니다. (추가자: {senderUsername})";
+                    var indexInfo = new MapIndexInfo { Style = styleLower };
+                    await _httpClient.PutAsJsonAsync(indexUrl, indexInfo);
+
+                    string msg = $"[등록완료] '{mapData.BeatmapSet.Title}' 맵이 '{styleLower}' 스타일 / '{difficultyFloor}성' 구간에 등록되었습니다.";
                     Console.WriteLine(msg);
                     if (onMessage != null) await onMessage(msg);
                 }
@@ -385,6 +390,7 @@ namespace Osu_MR_Bot.Services
             }
         }
 
+        // [수정] 일괄 등록 (4성 미만 필터 추가)
         public async Task RegisterBatchMapStylesAsync(string senderUsername, List<int> mapIds, string style, Func<string, Task>? onMessage = null)
         {
             if (string.IsNullOrEmpty(_accessToken)) return;
@@ -392,13 +398,8 @@ namespace Osu_MR_Bot.Services
             Console.WriteLine($"[Command] 일괄 맵 등록 요청: {mapIds.Count}개, Style={style}, By={senderUsername}");
             if (onMessage != null) await onMessage($"[처리중] {mapIds.Count}개의 맵을 '{style}' 스타일로 등록을 시도합니다...");
 
-            // [수정] 일괄 등록 전 밴 체크
             var userData = await GetOsuUserAsync(senderUsername);
-            if (userData == null || await IsUserBannedAsync(userData.Id))
-            {
-                Console.WriteLine($"[Ignore] Banned User or Not Found: {senderUsername}");
-                return;
-            }
+            if (userData == null || await IsUserBannedAsync(userData.Id)) return;
 
             int successCount = 0;
             int duplicateCount = 0;
@@ -409,27 +410,37 @@ namespace Osu_MR_Bot.Services
             {
                 try
                 {
+                    // 1. 중복 확인
+                    string indexUrl = $"{_firebaseUrl}/map_index/{mapId}.json?auth={_firebaseSecret}";
+                    var indexResponse = await _httpClient.GetAsync(indexUrl);
+                    if (indexResponse.IsSuccessStatusCode)
+                    {
+                        var content = await indexResponse.Content.ReadAsStringAsync();
+                        if (!string.IsNullOrEmpty(content) && content != "null")
+                        {
+                            duplicateCount++;
+                            continue;
+                        }
+                    }
+
+                    // 2. 맵 정보 조회
                     string mapUrl = $"https://osu.ppy.sh/api/v2/beatmaps/{mapId}";
                     var response = await _httpClient.GetAsync(mapUrl);
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        Console.WriteLine($"[Error] 맵 정보 조회 실패: ID={mapId}");
                         failCount++;
                         continue;
                     }
 
                     var mapData = await response.Content.ReadFromJsonAsync<OsuBeatmap>();
-                    if (mapData == null)
-                    {
-                        failCount++;
-                        continue;
-                    }
+                    if (mapData == null) { failCount++; continue; }
 
+                    // [수정] 거름망 적용 (4성 미만 포함)
                     var validStatuses = new[] { "ranked", "loved", "approved" };
-                    if (mapData.ModeInt != 0 || !validStatuses.Contains(mapData.Status))
+                    if (mapData.ModeInt != 0 || !validStatuses.Contains(mapData.Status) || mapData.DifficultyRating < 4.0)
                     {
-                        Console.WriteLine($"[Skip] 조건 불충족 맵: {mapId} (Mode: {mapData.ModeInt}, Status: {mapData.Status})");
+                        Console.WriteLine($"[Skip] 조건 불충족 맵: {mapId} (SR: {mapData.DifficultyRating:F2})");
                         filterCount++;
                         continue;
                     }
@@ -437,19 +448,8 @@ namespace Osu_MR_Bot.Services
                     int difficultyFloor = (int)Math.Floor(mapData.DifficultyRating);
                     string styleLower = style.ToLower();
 
+                    // 3. 저장
                     string dbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}/{mapId}.json?auth={_firebaseSecret}";
-
-                    var checkResponse = await _httpClient.GetAsync(dbUrl);
-                    if (checkResponse.IsSuccessStatusCode)
-                    {
-                        string existingContent = await checkResponse.Content.ReadAsStringAsync();
-                        if (!string.IsNullOrEmpty(existingContent) && existingContent != "null")
-                        {
-                            duplicateCount++;
-                            continue;
-                        }
-                    }
-
                     var mapInfoToSave = new
                     {
                         Title = mapData.BeatmapSet.Title,
@@ -460,8 +460,17 @@ namespace Osu_MR_Bot.Services
                     };
 
                     var saveResponse = await _httpClient.PutAsJsonAsync(dbUrl, mapInfoToSave);
-                    if (saveResponse.IsSuccessStatusCode) successCount++;
-                    else failCount++;
+                    if (saveResponse.IsSuccessStatusCode)
+                    {
+                        // 인덱스 저장
+                        var indexInfo = new MapIndexInfo { Style = styleLower };
+                        await _httpClient.PutAsJsonAsync(indexUrl, indexInfo);
+                        successCount++;
+                    }
+                    else
+                    {
+                        failCount++;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -470,7 +479,7 @@ namespace Osu_MR_Bot.Services
                 }
             }
 
-            string resultMsg = $"[완료] 총 {mapIds.Count}개 중 성공: {successCount}, 중복: {duplicateCount}, 조건미달: {filterCount}, 오류: {failCount}";
+            string resultMsg = $"[완료] 총 {mapIds.Count}개 중 성공: {successCount}, 중복: {duplicateCount}, 조건미달(4성 미만 등): {filterCount}, 오류: {failCount}";
             Console.WriteLine(resultMsg);
             if (onMessage != null) await onMessage(resultMsg);
         }
@@ -483,12 +492,10 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // 1. 유저 정보 및 밴 확인
                 var userData = await GetOsuUserAsync(username);
                 if (userData == null) { if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다."); return; }
                 if (await IsUserBannedAsync(userData.Id)) { Console.WriteLine($"[Ignore] Banned User: {username}"); return; }
 
-                // 2. Firebase 유저 데이터 조회
                 string userDbUrl = $"{_firebaseUrl}/users/{userData.Id}.json?auth={_firebaseSecret}";
                 var dbResponse = await _httpClient.GetAsync(userDbUrl);
 
@@ -505,10 +512,8 @@ namespace Osu_MR_Bot.Services
 
                 if (userBotData == null) { if (onMessage != null) await onMessage("!m r start를 입력해서 유저 정보를 먼저 저장해 주세요."); return; }
 
-                // [안전장치] 리스트가 null이면 초기화
                 if (userBotData.RecentMaps == null) userBotData.RecentMaps = new List<int>();
 
-                // 3. 추천 난이도 계산
                 double currentPp = (double)userBotData.CurrentPp;
                 double baseStarRating = Math.Pow(currentPp, 0.4) * 0.195;
 
@@ -530,7 +535,6 @@ namespace Osu_MR_Bot.Services
 
                 Console.WriteLine($"[Info] {username} (PP: {currentPp}, Pref: {pref}) -> Target: {targetStarRating:F2} (Floor: {difficultyFloor})");
 
-                // 4. DB 맵 목록 조회
                 string styleLower = style.ToLower();
                 string mapDbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}.json?auth={_firebaseSecret}";
 
@@ -553,17 +557,9 @@ namespace Osu_MR_Bot.Services
                     return;
                 }
 
-                // ==========================================================
-                // [신규 로직] 중복 방지 필터링
-                // ==========================================================
-
-                // 전체 후보 맵 ID 목록
+                // 중복 방지 필터링
                 List<string> allCandidateIds = mapsDict.Keys.ToList();
-
-                // 유저가 최근에 플레이한 맵 ID 목록 (문자열로 변환)
                 HashSet<string> seenMapIds = userBotData.RecentMaps.Select(id => id.ToString()).ToHashSet();
-
-                // 안 해본 맵(Available)만 걸러내기
                 List<string> availableIds = allCandidateIds.Where(id => !seenMapIds.Contains(id)).ToList();
 
                 string selectedMapId;
@@ -571,14 +567,12 @@ namespace Osu_MR_Bot.Services
 
                 if (availableIds.Count > 0)
                 {
-                    // 안 해본 맵이 있다면 거기서 뽑기
                     int index = _random.Next(availableIds.Count);
                     selectedMapId = availableIds[index];
                     Console.WriteLine($"[Logic] 새로운 맵 추천 ({availableIds.Count}개 중 선택)");
                 }
                 else
                 {
-                    // 만약 이 난이도의 맵을 다 해봤다면? -> 전체 목록에서 랜덤 (재탕)
                     int index = _random.Next(allCandidateIds.Count);
                     selectedMapId = allCandidateIds[index];
                     Console.WriteLine($"[Logic] 해당 구간 맵 고갈. 전체({allCandidateIds.Count}개) 중 재추천.");
@@ -586,30 +580,14 @@ namespace Osu_MR_Bot.Services
 
                 mapInfo = mapsDict[selectedMapId];
 
-                // ==========================================================
-                // [신규 로직] 추천 기록 저장 (History Update)
-                // ==========================================================
-
+                // 추천 기록 저장
                 int mapIdInt = int.Parse(selectedMapId);
-
-                // 리스트에 이미 있다면 제거하고 맨 뒤로 보냄 (최신화)
-                if (userBotData.RecentMaps.Contains(mapIdInt))
-                {
-                    userBotData.RecentMaps.Remove(mapIdInt);
-                }
+                if (userBotData.RecentMaps.Contains(mapIdInt)) userBotData.RecentMaps.Remove(mapIdInt);
                 userBotData.RecentMaps.Add(mapIdInt);
+                if (userBotData.RecentMaps.Count > 50) userBotData.RecentMaps.RemoveAt(0);
 
-                // 리스트 크기 제한 (최근 50개까지만 기억)
-                if (userBotData.RecentMaps.Count > 50)
-                {
-                    userBotData.RecentMaps.RemoveAt(0); // 가장 오래된 것 삭제
-                }
-
-                // 변경된 유저 정보(History 포함) 저장
-                // 여기서 Save를 호출해야 다음 번에 기억함
                 await SaveToFirebaseAsync(userBotData);
 
-                // 6. 메시지 전송
                 string link = $"https://osu.ppy.sh/b/{selectedMapId}";
                 string message = $"[추천] {mapInfo.Title} [{mapInfo.StarRating:F2}★] - {link}";
 
@@ -630,7 +608,6 @@ namespace Osu_MR_Bot.Services
 
             try
             {
-                // [밴 확인]
                 var userData = await GetOsuUserAsync(requester);
                 if (userData == null || await IsUserBannedAsync(userData.Id))
                 {
@@ -765,45 +742,22 @@ namespace Osu_MR_Bot.Services
         private async Task SaveToFirebaseAsync(UserBotData data)
         {
             string dbUrl = $"{_firebaseUrl}/users/{data.UserId}.json?auth={_firebaseSecret}";
-
             try
             {
-                var response = await _httpClient.PutAsJsonAsync(dbUrl, data);
-
-                if (response.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"[Success] FireBase 저장 완료! (User: {data.Username}, DiffPref: {data.DifficultyPreference})");
-                }
-                else
-                {
-                    string msg = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[Error] FireBase 저장 실패: {msg}");
-                }
+                await _httpClient.PutAsJsonAsync(dbUrl, data);
+                Console.WriteLine($"[Success] User Data Saved (ID: {data.UserId}, History: {data.RecentMaps?.Count ?? 0})");
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Error] FireBase 연결 오류: {ex.Message}");
-            }
+            catch (Exception ex) { Console.WriteLine($"[Error] FireBase 연결 오류: {ex.Message}"); }
         }
 
         private class DbMapInfo
         {
-            [JsonPropertyName("Title")]
-            public string Title { get; set; }
-
-            [JsonPropertyName("Artist")]
-            public string Artist { get; set; }
-
-            [JsonPropertyName("StarRating")]
-            public double StarRating { get; set; }
-
-            [JsonPropertyName("AddedBy")]
-            public string AddedBy { get; set; }
+            [JsonPropertyName("Title")] public string Title { get; set; }
+            [JsonPropertyName("Artist")] public string Artist { get; set; }
+            [JsonPropertyName("StarRating")] public double StarRating { get; set; }
+            [JsonPropertyName("AddedBy")] public string AddedBy { get; set; }
         }
-
-        private class SavedMapInfo
-        {
-            public string AddedBy { get; set; }
-        }
+        private class SavedMapInfo { public string AddedBy { get; set; } }
+        private class MapIndexInfo { [JsonPropertyName("style")] public string Style { get; set; } }
     }
 }
