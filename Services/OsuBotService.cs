@@ -493,8 +493,16 @@ namespace Osu_MR_Bot.Services
             try
             {
                 var userData = await GetOsuUserAsync(username);
-                if (userData == null) { if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다."); return; }
-                if (await IsUserBannedAsync(userData.Id)) { Console.WriteLine($"[Ignore] Banned User: {username}"); return; }
+                if (userData == null)
+                {
+                    if (onMessage != null) await onMessage("유저 정보를 찾을 수 없습니다.");
+                    return;
+                }
+                if (await IsUserBannedAsync(userData.Id))
+                {
+                    Console.WriteLine($"[Ignore] Banned User: {username}");
+                    return;
+                }
 
                 string userDbUrl = $"{_firebaseUrl}/users/{userData.Id}.json?auth={_firebaseSecret}";
                 var dbResponse = await _httpClient.GetAsync(userDbUrl);
@@ -510,7 +518,11 @@ namespace Osu_MR_Bot.Services
                     }
                 }
 
-                if (userBotData == null) { if (onMessage != null) await onMessage("!m r start를 입력해서 유저 정보를 먼저 저장해 주세요."); return; }
+                if (userBotData == null)
+                {
+                    if (onMessage != null) await onMessage("!m r start를 입력해서 유저 정보를 먼저 저장해 주세요.");
+                    return;
+                }
 
                 if (userBotData.RecentMaps == null) userBotData.RecentMaps = new List<int>();
 
@@ -530,6 +542,19 @@ namespace Osu_MR_Bot.Services
                     default: offset = 0.0; diffName = "어려움"; break;
                 }
 
+                // [수정] DT 스타일일 경우 난이도 추가 감소 (-1.35)
+                if (style.Equals("DT", StringComparison.OrdinalIgnoreCase))
+                {
+                    offset -= 1.35;
+                    Console.WriteLine($"[Logic] DT Mod 감지: 목표 난이도 보정 (-1.35 적용)");
+                }
+                // [신규] lowAR 스타일일 경우 난이도 추가 감소 (-0.7)
+                else if (style.Equals("lowAR", StringComparison.OrdinalIgnoreCase))
+                {
+                    offset -= 0.7;
+                    Console.WriteLine($"[Logic] lowAR Mod 감지: 목표 난이도 보정 (-0.7 적용)");
+                }
+
                 double targetStarRating = Math.Max(0, baseStarRating + offset);
                 int difficultyFloor = (int)Math.Floor(targetStarRating);
 
@@ -539,7 +564,11 @@ namespace Osu_MR_Bot.Services
                 string mapDbUrl = $"{_firebaseUrl}/styles/{styleLower}/{difficultyFloor}.json?auth={_firebaseSecret}";
 
                 var mapResponse = await _httpClient.GetAsync(mapDbUrl);
-                if (!mapResponse.IsSuccessStatusCode) { if (onMessage != null) await onMessage($"[{styleLower}] 해당 난이도({difficultyFloor}성) 데이터를 가져올 수 없습니다."); return; }
+                if (!mapResponse.IsSuccessStatusCode)
+                {
+                    if (onMessage != null) await onMessage($"[{styleLower}] 해당 난이도({difficultyFloor}성) 데이터를 가져올 수 없습니다.");
+                    return;
+                }
 
                 var mapContent = await mapResponse.Content.ReadAsStringAsync();
                 if (string.IsNullOrEmpty(mapContent) || mapContent == "null")
